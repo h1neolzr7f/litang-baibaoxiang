@@ -6,7 +6,7 @@
 
 ## 给别人用（推荐）
 
-1. 打开 [Releases](https://github.com/h1neolzr7f/litang-baibaoxiang/releases) 下载一键包
+1. 打开 [Releases](https://github.com/h1neolzr7f/litang-baibaoxiang/releases) 下载 `litang-baibaoxiang-v2.4.1-windows.zip`
 2. 解压整个文件夹，不要只拷启动文件
 3. 双击 `启动理塘百宝箱.bat`
 4. 先选成品放哪里，再把图片或文件夹拖进去
