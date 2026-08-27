@@ -10,5 +10,7 @@
 | Real-CUGAN ncnn Vulkan | 超分 | 其项目原许可证 |
 | `censor.pt` | 敏感部位检测权重 | 来自 ANR 打码插件，不进 git |
 | `anr_plugin_auto_mosaics` 的打码绘制 | 像素/模糊等遮罩效果 | GPL-3.0，只打进一键包 |
+| ONNX Runtime | Android 机内推理 | 其自身许可证，在 APK 内 |
+| `censor.onnx` | 手机打码权重 | 与桌面 YOLO 同类，只打进 APK |
 
-源码仓库 **不包含** 模型权重、ANR 自带 Python、Real-CUGAN 可执行文件。要复现一键包，请在已经装好 ANR 的开发机上运行 `打包一键包.bat`。
+源码仓库 **不包含** 模型权重、ANR 自带 Python、Real-CUGAN 可执行文件、APK。Windows 一键包用 `打包一键包.bat` 在开发机生成；Android 安装包走 Releases。

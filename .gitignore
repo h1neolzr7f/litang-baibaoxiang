@@ -8,6 +8,9 @@ data/last_error.txt
 *.zip
 *.7z
 *.lnk
+*.apk
+*.aab
+*.onnx
 __pycache__/
 *.py[cod]
 .pytest_cache/

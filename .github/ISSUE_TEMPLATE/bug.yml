@@ -1,0 +1,28 @@
+name: 出问题
+description: Windows 或 Android 使用问题
+labels: ["bug"]
+body:
+  - type: dropdown
+    id: platform
+    attributes:
+      label: 哪一端
+      options:
+        - Windows 一键包
+        - Windows 源码
+        - Android APK
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      placeholder: 例如 2.4.1 或 Android 0.29
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: 发生了什么
+      description: 不要贴原图、完整提示词或本机路径。
+    validations:
+      required: true
