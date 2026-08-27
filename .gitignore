@@ -1,0 +1,16 @@
+.venv/
+输出/
+dist/
+runtime/
+data/
+data/config.json
+data/last_error.txt
+*.zip
+*.7z
+*.lnk
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+*.png
+!tests/fixtures/**
