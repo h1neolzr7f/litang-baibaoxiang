@@ -8,4 +8,4 @@
 
 Windows 端默认只在本机读写。Android 端把成品写到本机相册。
 
-发现问题可以开 Issue，只描述复现步骤和软件版本（例如 Windows 2.4.1 / Android 0.29）。
+发现问题可以开 Issue，只描述复现步骤和软件版本（例如 Windows 2.4.3 / Android 0.29）。

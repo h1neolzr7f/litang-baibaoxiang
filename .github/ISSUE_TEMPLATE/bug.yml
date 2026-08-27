@@ -16,7 +16,7 @@ body:
     id: version
     attributes:
       label: 版本
-      placeholder: 例如 2.4.1 或 Android 0.29
+      placeholder: 例如 2.4.3 或 Android 0.29
     validations:
       required: true
   - type: textarea

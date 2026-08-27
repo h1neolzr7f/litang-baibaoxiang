@@ -6,14 +6,14 @@
 
 **Windows 一键包 + Android 安装包。原图不会被修改。**
 
-![Version](https://img.shields.io/badge/Version-2.4.1-3E6B45)
+![Version](https://img.shields.io/badge/Version-2.4.3-3E6B45)
 ![Windows](https://img.shields.io/badge/Windows-一键包-0078D4?logo=windows&logoColor=white)
 ![Android](https://img.shields.io/badge/Android-arm64_APK-3DDC84?logo=android&logoColor=white)
 ![License](https://img.shields.io/badge/License-AGPL--3.0-red)
 ![Privacy](https://img.shields.io/badge/Privacy-Local--first-7A5AF8)
 
-[下载 Windows 一键包](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/tag/v2.4.1) ·
-[下载 Android APK](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/tag/v2.4.1) ·
+[下载 Windows 一键包](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/tag/v2.4.3) ·
+[下载 Android APK](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/tag/v2.4.3) ·
 [使用说明](docs/PRODUCT.md) ·
 [参与贡献](CONTRIBUTING.md) ·
 [第三方](THIRD_PARTY.md)
@@ -21,7 +21,7 @@
 </div>
 
 > [!TIP]
-> **第一次来？** Windows 下 [v2.4.1 一键包](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/tag/v2.4.1) 完整解压后双击 `启动理塘百宝箱.bat`。手机下同页的 `litang-baibaoxiang-v0.29-android-arm64.apk`，允许未知来源后安装。两边都不用再装 Python 或 ANR。
+> **第一次来？** Windows 下 [v2.4.3 一键包](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/tag/v2.4.3) 完整解压后双击 `启动理塘百宝箱.bat`。手机下同页的 `litang-baibaoxiang-v0.29-android-arm64.apk`，允许未知来源后安装。两边都不用再装 Python 或 ANR。
 
 ## 一分钟了解
 
@@ -38,16 +38,16 @@
 
 | 平台 | 文件 | 大约体积 |
 | --- | --- | --- |
-| **Windows 10/11** | [`litang-baibaoxiang-v2.4.1-windows.zip`](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/download/v2.4.1/litang-baibaoxiang-v2.4.1-windows.zip) | 压缩约 330 MB，解压约 1 GB |
-| **Android arm64** | [`litang-baibaoxiang-v0.29-android-arm64.apk`](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/download/v2.4.1/litang-baibaoxiang-v0.29-android-arm64.apk) | 约 43 MB |
+| **Windows 10/11** | [`litang-baibaoxiang-v2.4.3-windows.zip`](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/download/v2.4.3/litang-baibaoxiang-v2.4.3-windows.zip) | 压缩约 330 MB，解压约 1 GB |
+| **Android arm64** | [`litang-baibaoxiang-v0.29-android-arm64.apk`](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/download/v2.4.3/litang-baibaoxiang-v0.29-android-arm64.apk) | 约 43 MB |
 
-请从 [Releases](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/tag/v2.4.1) 下载。不要只拷一个启动文件。
+请从 [Releases](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/tag/v2.4.3) 下载。不要只拷一个启动文件。
 
 ### Windows
 
 1. 解压整个文件夹  
 2. 双击 `启动理塘百宝箱.bat`（想要桌面图标再点 `创建桌面快捷方式.bat`）  
-3. 先选成品放哪里，再把图片或文件夹拖进去  
+3. 先选成品放哪里，再把图片或文件夹拖进去，点绿色框里或窗口底下的「开始处理」  
 
 成品默认在包内 `输出`。原图不改。
 
@@ -114,7 +114,7 @@ docs/                产品说明
 
 <div align="center">
 
-**理塘百宝箱 2.4.1** · Windows 一键包 + Android APK  
-请从 [Releases](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/tag/v2.4.1) 下载。
+**理塘百宝箱 2.4.3** · Windows 一键包 + Android APK  
+请从 [Releases](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/tag/v2.4.3) 下载。
 
 </div>

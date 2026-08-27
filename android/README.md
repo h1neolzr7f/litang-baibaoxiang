@@ -4,7 +4,7 @@ Android arm64 安装包已经随仓库 Releases 发布。手机上用机内 **ON
 
 ## 安装
 
-1. 打开 [v2.4.1 Release](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/tag/v2.4.1)
+1. 打开 [v2.4.3 Release](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/tag/v2.4.3)
 2. 下载 `litang-baibaoxiang-v0.29-android-arm64.apk`（约 43 MB）
 3. 允许「未知来源」后安装
 4. 只要 **64 位** Android。32 位机型装不上
