@@ -30,50 +30,87 @@ ERR = "#A33B2B"
 OK = "#2F6B3A"
 
 
+def fit_window_geometry(screen_w: int, screen_h: int, scale: float = 1.0) -> tuple[int, int]:
+    """按屏幕像素和 CTk 缩放算出 geometry 用的逻辑宽高，保证实际窗口不超出屏幕。"""
+    scale = max(float(scale or 1.0), 0.5)
+    width = max(400, min(1120, int((max(int(screen_w), 400) - 48) / scale)))
+    height = max(360, min(820, int((max(int(screen_h), 360) - 88) / scale)))
+    return width, height
+
+
+def fit_dialog_geometry(
+    screen_w: int,
+    screen_h: int,
+    scale: float = 1.0,
+    want_w: int = 560,
+    want_h: int = 420,
+) -> tuple[int, int]:
+    scale = max(float(scale or 1.0), 0.5)
+    width = max(360, min(want_w, int((max(int(screen_w), 360) - 48) / scale)))
+    height = max(280, min(want_h, int((max(int(screen_h), 280) - 88) / scale)))
+    return width, height
+
+
 class ConfirmDialog(ctk.CTkToplevel):
     def __init__(self, master: ctk.CTk, preflight: dict) -> None:
         super().__init__(master)
         self.title("确认开始")
-        self.geometry("560x420")
-        self.resizable(False, False)
         self.result = False
         self.configure(fg_color=CREAM)
         self.transient(master)
         try:
+            scale = max(float(self._get_window_scaling()), 0.5)
+        except Exception:
+            scale = 1.0
+        width, height = fit_dialog_geometry(self.winfo_screenwidth(), self.winfo_screenheight(), scale)
+        self.minsize(min(420, width), min(280, height))
+        self.geometry(f"{width}x{height}")
+        try:
             self.grab_set()
         except Exception:
             pass
-        ctk.CTkLabel(self, text="核对一下再开始", font=ctk.CTkFont(size=22, weight="bold"), text_color=TEXT).pack(
-            anchor="w", padx=24, pady=(20, 8)
-        )
-        ctk.CTkLabel(self, text=preflight["summary"], font=ctk.CTkFont(size=15), text_color=ACCENT).pack(
-            anchor="w", padx=24
-        )
-        ctk.CTkLabel(
-            self,
-            text=f"成品放在：{preflight['output_text']}",
-            wraplength=500,
-            justify="left",
-            text_color=TEXT,
-        ).pack(anchor="w", padx=24, pady=(12, 6))
-        ctk.CTkLabel(self, text="原图不会被修改。做到一半关掉，下次会自动跳过已经做好的。", text_color=MUTED).pack(
-            anchor="w", padx=24
-        )
-        for warn in preflight.get("warnings") or []:
-            ctk.CTkLabel(self, text="注意：" + warn, wraplength=500, justify="left", text_color=WARN).pack(
-                anchor="w", padx=24, pady=4
-            )
-        for block in preflight.get("blockers") or []:
-            ctk.CTkLabel(self, text="还不能开始：" + block, wraplength=500, justify="left", text_color=ERR).pack(
-                anchor="w", padx=24, pady=4
-            )
+
         row = ctk.CTkFrame(self, fg_color="transparent")
-        row.pack(side="bottom", fill="x", padx=24, pady=20)
+        row.pack(side="bottom", fill="x", padx=24, pady=16)
         ctk.CTkButton(row, text="返回修改", width=120, fg_color="#C9B79A", hover_color="#B4A184",
                       text_color=TEXT, command=self._no).pack(side="left")
-        start = ctk.CTkButton(row, text="确认开始", width=160, fg_color=ACCENT, hover_color=ACCENT_HOVER,
-                              command=self._yes, state="normal" if preflight.get("ok") else "disabled")
-        start.pack(side="right")
+        self.confirm_btn = ctk.CTkButton(
+            row,
+            text="确认开始",
+            width=160,
+            fg_color=ACCENT,
+            hover_color=ACCENT_HOVER,
+            command=self._yes,
+            state="normal" if preflight.get("ok") else "disabled",
+        )
+        self.confirm_btn.pack(side="right")
+
+        body = ctk.CTkScrollableFrame(self, fg_color="transparent")
+        body.pack(fill="both", expand=True, padx=8, pady=(8, 0))
+        ctk.CTkLabel(body, text="核对一下再开始", font=ctk.CTkFont(size=22, weight="bold"), text_color=TEXT).pack(
+            anchor="w", padx=16, pady=(12, 8)
+        )
+        ctk.CTkLabel(body, text=preflight["summary"], font=ctk.CTkFont(size=15), text_color=ACCENT).pack(
+            anchor="w", padx=16
+        )
+        ctk.CTkLabel(
+            body,
+            text=f"成品放在：{preflight['output_text']}",
+            wraplength=480,
+            justify="left",
+            text_color=TEXT,
+        ).pack(anchor="w", padx=16, pady=(12, 6))
+        ctk.CTkLabel(body, text="原图不会被修改。做到一半关掉，下次会自动跳过已经做好的。", text_color=MUTED).pack(
+            anchor="w", padx=16
+        )
+        for warn in preflight.get("warnings") or []:
+            ctk.CTkLabel(body, text="注意：" + warn, wraplength=480, justify="left", text_color=WARN).pack(
+                anchor="w", padx=16, pady=4
+            )
+        for block in preflight.get("blockers") or []:
+            ctk.CTkLabel(body, text="还不能开始：" + block, wraplength=480, justify="left", text_color=ERR).pack(
+                anchor="w", padx=16, pady=4
+            )
         self.bind("<Return>", lambda _e: self._yes() if preflight.get("ok") else None)
         self.bind("<Escape>", lambda _e: self._no())
 
@@ -90,8 +127,7 @@ class LitangApp(ctk.CTk):
     def __init__(self) -> None:
         super().__init__()
         self.title(f"{APP_NAME}  v{__version__}")
-        self.geometry("1120x880")
-        self.minsize(980, 760)
+        self._fit_window()
         self.configure(fg_color=CREAM)
         self.cfg = load_config()
         self.items: list[QueueItem] = []
@@ -99,31 +135,53 @@ class LitangApp(ctk.CTk):
         self.worker: threading.Thread | None = None
         self.control = JobControl()
         self.session_dir = ""
-        self._estimate_job: str | None = None
+        self._estimate_after: str | None = None
 
         self._build()
         self._refresh_anr()
         self._hook_drag_drop()
         self._on_output_change()
+        self._fit_window()
+        self.after_idle(self._fit_window)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+
+    def _window_scale(self) -> float:
+        try:
+            return max(float(self._get_window_scaling()), 0.5)
+        except Exception:
+            return 1.0
+
+    def _fit_window(self) -> None:
+        """按屏幕和 CTk 缩放收窗口，避免开始键落到任务栏下面。"""
+        screen_w = int(self.winfo_screenwidth() or 1280)
+        screen_h = int(self.winfo_screenheight() or 720)
+        scale = self._window_scale()
+        width, height = fit_window_geometry(screen_w, screen_h, scale)
+        self.minsize(min(980, width), min(640, height))
+        self.maxsize(max(width, int((screen_w - 24) / scale)), max(height, int((screen_h - 40) / scale)))
+        self.geometry(f"{width}x{height}")
+
+    def _set_start_state(self, state: str) -> None:
+        for btn in getattr(self, "start_buttons", []):
+            btn.configure(state=state)
 
     def _build(self) -> None:
         header = ctk.CTkFrame(self, fg_color=CARD, corner_radius=16, border_width=1, border_color=LINE)
-        header.pack(fill="x", padx=16, pady=(16, 8))
-        ctk.CTkLabel(header, text=APP_NAME, font=ctk.CTkFont(size=28, weight="bold"), text_color=TEXT).pack(
-            anchor="w", padx=20, pady=(14, 0)
+        header.pack(fill="x", padx=16, pady=(10, 6))
+        ctk.CTkLabel(header, text=APP_NAME, font=ctk.CTkFont(size=26, weight="bold"), text_color=TEXT).pack(
+            anchor="w", padx=20, pady=(8, 0)
         )
         ctk.CTkLabel(
             header,
             text="先选成品放哪里，再把图片或文件夹拖进来。十几 GB 也能排队处理。原图保证不改。",
             font=ctk.CTkFont(size=14),
             text_color=MUTED,
-        ).pack(anchor="w", padx=20, pady=(2, 14))
+        ).pack(anchor="w", padx=20, pady=(2, 8))
 
         place = ctk.CTkFrame(self, fg_color=CARD, corner_radius=16, border_width=1, border_color=LINE)
         place.pack(fill="x", padx=16, pady=(0, 8))
         ctk.CTkLabel(place, text="成品放哪里（点选即可改）", font=ctk.CTkFont(size=16, weight="bold"), text_color=TEXT).pack(
-            anchor="w", padx=18, pady=(12, 6)
+            anchor="w", padx=18, pady=(8, 4)
         )
         self.var_mode = ctk.StringVar(value=str(self.cfg.get("output_mode") or "folder"))
         for value, label in (
@@ -133,7 +191,7 @@ class LitangApp(ctk.CTk):
         ):
             ctk.CTkRadioButton(
                 place, text=label, variable=self.var_mode, value=value, command=self._on_output_change, text_color=TEXT
-            ).pack(anchor="w", padx=18, pady=2)
+            ).pack(anchor="w", padx=18, pady=1)
 
         path_row = ctk.CTkFrame(place, fg_color="transparent")
         path_row.pack(fill="x", padx=18, pady=(8, 4))
@@ -147,7 +205,7 @@ class LitangApp(ctk.CTk):
                       text_color=TEXT, command=self._open_output).pack(side="left", padx=(8, 0))
 
         extra = ctk.CTkFrame(place, fg_color="transparent")
-        extra.pack(fill="x", padx=18, pady=(4, 12))
+        extra.pack(fill="x", padx=18, pady=(2, 8))
         self.var_keep = ctk.BooleanVar(value=bool(self.cfg.get("keep_structure", True)))
         self.var_dated = ctk.BooleanVar(value=bool(self.cfg.get("dated_session", False)))
         self.var_skip = ctk.BooleanVar(value=bool(self.cfg.get("skip_existing", True)))
@@ -162,17 +220,64 @@ class LitangApp(ctk.CTk):
         drop.pack(fill="x", padx=16, pady=(0, 8))
         self.drop_title = ctk.CTkLabel(drop, text="把图片或文件夹拖到这里", font=ctk.CTkFont(size=20, weight="bold"),
                                       text_color=ACCENT)
-        self.drop_title.pack(pady=(20, 2))
+        self.drop_title.pack(pady=(12, 2))
         self.drop_hint = ctk.CTkLabel(drop, text="十几 GB 会在后台扫描排队，界面不会卡住。", text_color=MUTED)
         self.drop_hint.pack()
         btns = ctk.CTkFrame(drop, fg_color="transparent")
-        btns.pack(pady=(8, 16))
+        btns.pack(pady=(6, 10))
         ctk.CTkButton(btns, text="选择图片", width=110, fg_color=ACCENT, hover_color=ACCENT_HOVER,
                       command=self._pick_files).pack(side="left", padx=6)
         ctk.CTkButton(btns, text="选择文件夹", width=110, fg_color=ACCENT, hover_color=ACCENT_HOVER,
                       command=self._pick_folder).pack(side="left", padx=6)
         ctk.CTkButton(btns, text="清空队列", width=90, fg_color="#C9B79A", hover_color="#B4A184",
                       text_color=TEXT, command=self._clear_queue).pack(side="left", padx=6)
+        self.start_btn = ctk.CTkButton(
+            btns,
+            text="开始处理",
+            width=150,
+            height=42,
+            font=ctk.CTkFont(size=16, weight="bold"),
+            fg_color=ACCENT,
+            hover_color=ACCENT_HOVER,
+            command=self._start,
+        )
+        self.start_btn.pack(side="left", padx=10)
+        self.start_buttons = [self.start_btn]
+
+        footer = ctk.CTkFrame(self, fg_color="transparent")
+        footer.pack(side="bottom", fill="x", padx=16, pady=(0, 10))
+        self.progress = ctk.CTkProgressBar(footer, progress_color=ACCENT, height=10)
+        self.progress.pack(fill="x")
+        self.progress.set(0)
+        self.status = ctk.CTkLabel(footer, text="空闲。先选成品位置，再拖入图片。", text_color=MUTED)
+        self.status.pack(anchor="w", pady=(6, 0))
+        self.current_label = ctk.CTkLabel(footer, text="当前：空闲", text_color=TEXT)
+        self.current_label.pack(anchor="w", pady=(0, 6))
+        actions = ctk.CTkFrame(footer, fg_color="transparent")
+        actions.pack(fill="x")
+        self.footer_start_btn = ctk.CTkButton(
+            actions,
+            text="开始处理",
+            width=150,
+            height=42,
+            font=ctk.CTkFont(size=16, weight="bold"),
+            fg_color=ACCENT,
+            hover_color=ACCENT_HOVER,
+            command=self._start,
+        )
+        self.footer_start_btn.pack(side="left")
+        self.start_buttons.append(self.footer_start_btn)
+        self.pause_btn = ctk.CTkButton(actions, text="暂停", width=80, height=42, fg_color="#C9B79A",
+                                      hover_color="#B4A184", text_color=TEXT, command=self._toggle_pause,
+                                      state="disabled")
+        self.pause_btn.pack(side="left", padx=8)
+        self.stop_btn = ctk.CTkButton(actions, text="停止", width=80, height=42, fg_color="#C9B79A",
+                                     hover_color="#B4A184", text_color=TEXT, command=self._stop, state="disabled")
+        self.stop_btn.pack(side="left")
+        ctk.CTkButton(actions, text="重试失败", width=90, height=42, fg_color="#C9B79A", hover_color="#B4A184",
+                      text_color=TEXT, command=self._retry).pack(side="left", padx=8)
+        ctk.CTkButton(actions, text="打开成品文件夹", width=130, height=42, fg_color="#C9B79A",
+                      hover_color="#B4A184", text_color=TEXT, command=self._open_output).pack(side="right")
 
         body = ctk.CTkFrame(self, fg_color="transparent")
         body.pack(fill="both", expand=True, padx=16, pady=(0, 8))
@@ -188,9 +293,7 @@ class LitangApp(ctk.CTk):
         self.stats.pack(anchor="w", padx=16)
         self.eta_label = ctk.CTkLabel(left, text="预计时间会在加入图片后显示。", text_color=MUTED)
         self.eta_label.pack(anchor="w", padx=16, pady=(0, 6))
-        self.current_label = ctk.CTkLabel(left, text="当前：空闲", text_color=TEXT)
-        self.current_label.pack(anchor="w", padx=16)
-        self.event_box = ctk.CTkTextbox(left, height=220, fg_color=CREAM, text_color=TEXT)
+        self.event_box = ctk.CTkTextbox(left, height=140, fg_color=CREAM, text_color=TEXT)
         self.event_box.pack(fill="both", expand=True, padx=12, pady=10)
         self.event_box.insert("end", "把文件夹拖进来即可。不会把几千张图画成卡死的列表。\n")
         self.event_box.configure(state="disabled")
@@ -277,31 +380,6 @@ class LitangApp(ctk.CTk):
         self.anr_label.pack(anchor="w", padx=16, pady=(10, 8))
         self.disk_label = ctk.CTkLabel(right, text="", wraplength=280, justify="left", text_color=MUTED)
         self.disk_label.pack(anchor="w", padx=16, pady=(0, 8))
-
-        footer = ctk.CTkFrame(self, fg_color="transparent")
-        footer.pack(fill="x", padx=16, pady=(0, 14))
-        self.progress = ctk.CTkProgressBar(footer, progress_color=ACCENT, height=10)
-        self.progress.pack(fill="x")
-        self.progress.set(0)
-        self.status = ctk.CTkLabel(footer, text="空闲。先选成品位置，再拖入图片。", text_color=MUTED)
-        self.status.pack(anchor="w", pady=6)
-        actions = ctk.CTkFrame(footer, fg_color="transparent")
-        actions.pack(fill="x")
-        self.start_btn = ctk.CTkButton(actions, text="开始处理", width=150, height=42,
-                                      font=ctk.CTkFont(size=16, weight="bold"),
-                                      fg_color=ACCENT, hover_color=ACCENT_HOVER, command=self._start)
-        self.start_btn.pack(side="left")
-        self.pause_btn = ctk.CTkButton(actions, text="暂停", width=80, height=42, fg_color="#C9B79A",
-                                      hover_color="#B4A184", text_color=TEXT, command=self._toggle_pause,
-                                      state="disabled")
-        self.pause_btn.pack(side="left", padx=8)
-        self.stop_btn = ctk.CTkButton(actions, text="停止", width=80, height=42, fg_color="#C9B79A",
-                                     hover_color="#B4A184", text_color=TEXT, command=self._stop, state="disabled")
-        self.stop_btn.pack(side="left")
-        ctk.CTkButton(actions, text="重试失败", width=90, height=42, fg_color="#C9B79A", hover_color="#B4A184",
-                      text_color=TEXT, command=self._retry).pack(side="left", padx=8)
-        ctk.CTkButton(actions, text="打开成品文件夹", width=130, height=42, fg_color="#C9B79A",
-                      hover_color="#B4A184", text_color=TEXT, command=self._open_output).pack(side="right")
 
     def _busy(self) -> bool:
         return bool(self.worker and self.worker.is_alive())
@@ -464,6 +542,17 @@ class LitangApp(ctk.CTk):
         self._refresh_estimate()
 
     def _refresh_estimate(self) -> None:
+        if self._estimate_after is not None:
+            try:
+                self.after_cancel(self._estimate_after)
+            except Exception:
+                pass
+        self._estimate_after = self.after(160, self._refresh_estimate_now)
+
+    def _refresh_estimate_now(self) -> None:
+        self._estimate_after = None
+        if not self.winfo_exists():
+            return
         cfg = self._peek_cfg()
         runtime = mosaic_runtime_status(cfg)
         clones = [
@@ -564,7 +653,7 @@ class LitangApp(ctk.CTk):
             self.cfg = save_config({k: v for k, v in cfg.items() if k != "_session_dir"})
             cfg = {**self.cfg, "_session_dir": str(session)}
         self.control = JobControl()
-        self.start_btn.configure(state="disabled")
+        self._set_start_state("disabled")
         self.pause_btn.configure(state="normal", text="暂停")
         self.stop_btn.configure(state="normal")
         self.progress.set(0)
@@ -602,7 +691,7 @@ class LitangApp(ctk.CTk):
         self.after(0, apply)
 
     def _on_finished(self) -> None:
-        self.start_btn.configure(state="normal")
+        self._set_start_state("normal")
         self.pause_btn.configure(state="disabled", text="暂停")
         self.stop_btn.configure(state="disabled")
         self.control.pause.clear()
@@ -642,6 +731,15 @@ class LitangApp(ctk.CTk):
                 return
             self.control.cancel.set()
         self.destroy()
+
+    def destroy(self) -> None:
+        if getattr(self, "_estimate_after", None) is not None:
+            try:
+                self.after_cancel(self._estimate_after)
+            except Exception:
+                pass
+            self._estimate_after = None
+        super().destroy()
 
 
 def run_app() -> None:

@@ -54,19 +54,52 @@ def load_signatures(record_dir: Path | None) -> dict[str, str]:
         return {}
 
 
+class SignatureStore:
+    """签名只读盘一次，内存比对；避免每张图都把整个 JSON 读回来。"""
+
+    def __init__(self, record_dir: Path | None) -> None:
+        self.record_dir = Path(record_dir) if record_dir else None
+        self._data = load_signatures(self.record_dir)
+        self._dirty = False
+
+    def matches(self, dest: Path, signature: str) -> bool:
+        if not dest.exists() or dest.stat().st_size <= 0:
+            return False
+        return self._data.get(str(dest)) == signature
+
+    def put(self, dest: Path, signature: str, flush: bool = True) -> None:
+        if not self.record_dir:
+            return
+        self._data[str(dest)] = signature
+        self._dirty = True
+        if flush:
+            self.flush()
+
+    def flush(self) -> None:
+        if not self.record_dir or not self._dirty:
+            return
+        self.record_dir.mkdir(parents=True, exist_ok=True)
+        signature_path(self.record_dir).write_text(
+            json.dumps(self._data, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        self._dirty = False
+
+
+def get_store(cfg: dict[str, Any] | None) -> SignatureStore:
+    cfg = cfg or {}
+    store = cfg.get("_sig_store")
+    if isinstance(store, SignatureStore):
+        return store
+    record = Path(cfg["_record_dir"]) if cfg.get("_record_dir") else None
+    store = SignatureStore(record)
+    cfg["_sig_store"] = store
+    return store
+
+
 def save_signature(record_dir: Path | None, dest: Path, signature: str) -> None:
-    if not record_dir:
-        return
-    Path(record_dir).mkdir(parents=True, exist_ok=True)
-    store = load_signatures(record_dir)
-    store[str(dest)] = signature
-    signature_path(record_dir).write_text(
-        json.dumps(store, ensure_ascii=False, indent=2) + "\n",
-        encoding="utf-8",
-    )
+    SignatureStore(record_dir).put(dest, signature)
 
 
 def same_quality(record_dir: Path | None, dest: Path, signature: str) -> bool:
-    if not dest.exists() or dest.stat().st_size <= 0:
-        return False
-    return load_signatures(record_dir).get(str(dest)) == signature
+    return SignatureStore(record_dir).matches(dest, signature)

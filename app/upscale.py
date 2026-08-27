@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import shutil
 import subprocess
-import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -11,9 +10,21 @@ from PIL import Image, ImageOps
 from app.config import APP_ROOT, bundled_anr_root, discover_anr_root
 
 MAX_OUTPUT_PIXELS = 160_000_000
+_DISCOVER_CACHE: dict[str, Path | None] = {}
+
+
+def _ascii_ok(path: Path) -> bool:
+    try:
+        str(path).encode("ascii")
+        return True
+    except UnicodeEncodeError:
+        return False
 
 
 def discover_realcugan(anr_root: str = "") -> Path | None:
+    key = str(anr_root or "")
+    if key in _DISCOVER_CACHE:
+        return _DISCOVER_CACHE[key]
     roots: list[Path] = []
     if anr_root:
         roots.append(Path(anr_root))
@@ -36,7 +47,10 @@ def discover_realcugan(anr_root: str = "") -> Path | None:
             root / "realcugan-ncnn-vulkan.exe",
         ):
             if exe.is_file():
-                return exe.resolve()
+                found = exe.resolve()
+                _DISCOVER_CACHE[key] = found
+                return found
+    _DISCOVER_CACHE[key] = None
     return None
 
 
@@ -58,7 +72,7 @@ def upscale_lanczos(source: Path, dest: Path, scale: int) -> Path:
             resampling = getattr(Image, "Resampling", None)
             method = resampling.LANCZOS if resampling else Image.LANCZOS
             img = img.resize((img.width * scale, img.height * scale), method)
-        img.save(dest, format="PNG", compress_level=3)
+        img.save(dest, format="PNG", compress_level=1)
     return dest
 
 
@@ -90,15 +104,16 @@ def upscale_realcugan(source: Path, dest: Path, scale: int, cfg: dict[str, Any])
         model = "models-pro"
     noise = _noise_flag(str(up.get("noise") or "conservative"))
     dest.parent.mkdir(parents=True, exist_ok=True)
-    temp = Path(tempfile.mkdtemp(prefix="ltup_"))
+    src_tmp = dest.parent / "_cugan_in.png"
+    out_tmp = dest.parent / "_cugan_out.png"
+    in_path = source if _ascii_ok(source) else src_tmp
     try:
-        src_tmp = temp / "in.png"
-        out_tmp = temp / "out.png"
-        shutil.copyfile(source, src_tmp)
+        if in_path == src_tmp:
+            shutil.copyfile(source, src_tmp)
         cmd = [
             str(exe),
             "-i",
-            str(src_tmp),
+            str(in_path),
             "-o",
             str(out_tmp),
             "-s",
@@ -123,7 +138,11 @@ def upscale_realcugan(source: Path, dest: Path, scale: int, cfg: dict[str, Any])
         shutil.copyfile(out_tmp, dest)
         return dest
     finally:
-        shutil.rmtree(temp, ignore_errors=True)
+        for junk in (src_tmp, out_tmp):
+            try:
+                junk.unlink()
+            except OSError:
+                pass
 
 
 def upscale_best(source: Path, dest: Path, scale: int, cfg: dict[str, Any]) -> tuple[Path, str]:

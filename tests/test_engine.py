@@ -4,7 +4,7 @@ from PIL import Image
 from PIL.PngImagePlugin import PngInfo
 
 from app.collect import scan_images
-from app.engine import JobControl, run_job
+from app.engine import JobControl, _parallel_plan, run_job
 from app.output import assign_destinations, make_session_dir
 
 
@@ -33,6 +33,15 @@ def _cfg(tmp_path: Path, **extra):
     }
     cfg.update(extra)
     return cfg
+
+
+def test_lanczos_jobs_can_use_multiple_workers() -> None:
+    workers, staged = _parallel_plan(
+        {"upscale": {"enabled": True, "engine": "lanczos", "scale": 2}, "workers": 2, "mosaic": {"enabled": False}},
+        mosaic_on=False,
+    )
+    assert workers == 2
+    assert staged is False
 
 
 def test_engine_custom_folder_and_resume(tmp_path: Path) -> None:

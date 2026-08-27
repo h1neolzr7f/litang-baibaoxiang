@@ -17,37 +17,47 @@ class MosaicNoTarget(RuntimeError):
     """ANR 跑过了，但没找到需要打码的部位。"""
 
 
+_RUNTIME_CACHE: tuple[str, dict[str, Any]] | None = None
+
+
 def mosaic_runtime_status(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    global _RUNTIME_CACHE
     cfg = cfg or load_config()
+    cache_key = f"{cfg.get('anr_root')}|{cfg.get('anr_python')}"
+    if _RUNTIME_CACHE and _RUNTIME_CACHE[0] == cache_key:
+        return dict(_RUNTIME_CACHE[1])
     anr_root = Path(str(cfg.get("anr_root") or "")).expanduser()
     plugin = anr_root / "plugins" / "anr_plugin_auto_mosaics"
     required = [plugin / "detector.py", plugin / "mosaics.py"]
     missing = [path.name for path in required if not path.is_file()]
     python_path = str(cfg.get("anr_python") or discover_anr_python(str(anr_root)))
     if missing:
-        return {
+        result = {
             "ok": False,
             "anr_root": str(anr_root),
             "anr_python": python_path,
             "message": "未找到 ANR 打码插件，超分和清元数据仍可用",
         }
-    if not python_path or not Path(python_path).is_file():
-        return {
+    elif not python_path or not Path(python_path).is_file():
+        result = {
             "ok": False,
             "anr_root": str(anr_root),
             "anr_python": python_path,
             "message": "找到了 ANR，但缺少它自带的 Python，打码暂不可用",
         }
-    return {
-        "ok": True,
-        "anr_root": str(anr_root.resolve()),
-        "anr_python": python_path,
-        "message": (
-            "已内置打码环境（加强识别：低阈值 + 切块 + 框外扩）"
-            if is_bundled_runtime()
-            else "ANR 打码可用（加强识别：低阈值 + 切块 + 框外扩）"
-        ),
-    }
+    else:
+        result = {
+            "ok": True,
+            "anr_root": str(anr_root.resolve()),
+            "anr_python": python_path,
+            "message": (
+                "已内置打码环境（加强识别：低阈值 + 切块 + 框外扩）"
+                if is_bundled_runtime()
+                else "ANR 打码可用（加强识别：低阈值 + 切块 + 框外扩）"
+            ),
+        }
+    _RUNTIME_CACHE = (cache_key, result)
+    return dict(result)
 
 
 def mosaic_detect_extra(mosaic_cfg: dict[str, Any]) -> dict[str, Any]:

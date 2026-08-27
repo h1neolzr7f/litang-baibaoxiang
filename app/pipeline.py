@@ -10,7 +10,8 @@ from PIL.PngImagePlugin import PngInfo
 
 from app.collect import QueueItem, collect_images
 from app.mosaic import MosaicNoTarget, mosaic_runtime_status, run_anr_mosaic
-from app.quality import quality_signature, same_quality, save_signature
+from app.pngmeta import is_png, write_clean_png
+from app.quality import get_store, quality_signature
 from app.upscale import upscale_best
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -30,6 +31,26 @@ class ProcessResult:
     missed_mosaic: bool = False
 
 
+@dataclass
+class ProcessState:
+    source: Path
+    final_path: Path
+    work_dir: Path
+    cfg: dict[str, Any]
+    current: Path
+    steps: list[str]
+    signature: str
+    tmp_final: Path
+    scale: int
+    need_upscale: bool
+    mosaic_ok: bool
+    need_meta: bool
+    note: str
+    cleanup: bool
+    missed_mosaic: bool = False
+    result: ProcessResult | None = None
+
+
 def _normalize(img: Image.Image) -> Image.Image:
     img = ImageOps.exif_transpose(img)
     if img.mode in {"RGBA", "LA"}:
@@ -41,6 +62,11 @@ def _normalize(img: Image.Image) -> Image.Image:
 
 def _strip_to(source: Path, dest: Path, note: str = "") -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
+    if is_png(source):
+        try:
+            return write_clean_png(source, dest, note=note)
+        except Exception:
+            pass
     with Image.open(source) as raw:
         img = _normalize(raw)
         meta = PngInfo()
@@ -59,102 +85,167 @@ def _copy_as_png(source: Path, dest: Path) -> None:
         _normalize(raw).save(dest, format="PNG", compress_level=3)
 
 
-def process_one(
-    source: Path,
-    final_path: Path,
-    work_dir: Path,
-    cfg: dict[str, Any],
-) -> ProcessResult:
+def _mosaic_runtime(cfg: dict[str, Any], need_mosaic: bool) -> dict[str, Any]:
+    cached = cfg.get("_mosaic_runtime")
+    if isinstance(cached, dict):
+        return cached
+    if not need_mosaic:
+        return {"ok": False}
+    return mosaic_runtime_status(cfg)
+
+
+def start_process(source: Path, final_path: Path, work_dir: Path, cfg: dict[str, Any]) -> ProcessState:
     output_name = final_path.name
     upscale_cfg = cfg.get("upscale") or {}
     mosaic_cfg = cfg.get("mosaic") or {}
     meta_cfg = cfg.get("metadata") or {}
     skip_existing = bool(cfg.get("skip_existing", True))
     cleanup = bool(cfg.get("cleanup_work", True))
-    record_dir = Path(cfg["_record_dir"]) if cfg.get("_record_dir") else None
     signature = quality_signature(cfg)
-    steps: list[str] = []
-    missed_mosaic = False
+    store = get_store(cfg)
 
-    if skip_existing and same_quality(record_dir, final_path, signature):
-        return ProcessResult(
-            ok=True,
+    if skip_existing and store.matches(final_path, signature):
+        return ProcessState(
             source=source,
-            output_name=output_name,
             final_path=final_path,
+            work_dir=work_dir,
+            cfg=cfg,
+            current=source,
             steps=["skip:same-quality"],
-            message="同等效果成品已在，跳过",
-            skipped=True,
+            signature=signature,
+            tmp_final=final_path.with_name(final_path.name + ".partial"),
+            scale=1,
+            need_upscale=False,
+            mosaic_ok=False,
+            need_meta=False,
+            note="",
+            cleanup=cleanup,
+            result=ProcessResult(
+                ok=True,
+                source=source,
+                output_name=output_name,
+                final_path=final_path,
+                steps=["skip:same-quality"],
+                message="同等效果成品已在，跳过",
+                skipped=True,
+            ),
         )
 
     need_upscale = bool(upscale_cfg.get("enabled", True))
     scale = max(1, min(int(upscale_cfg.get("scale") or 2), 4)) if need_upscale else 1
     need_mosaic = bool(mosaic_cfg.get("enabled"))
-    need_meta = bool(meta_cfg.get("enabled", True))
-    note = str(meta_cfg.get("custom_note") or "")
+    runtime = _mosaic_runtime(cfg, need_mosaic)
+    mosaic_ok = bool(need_mosaic and runtime.get("ok"))
+    steps: list[str] = []
+    if need_mosaic and not mosaic_ok:
+        steps.append("mosaic:unavailable")
+
+    if work_dir.exists():
+        shutil.rmtree(work_dir, ignore_errors=True)
+    work_dir.mkdir(parents=True, exist_ok=True)
     tmp_final = final_path.with_name(final_path.name + ".partial")
-    current = source
+    if tmp_final.exists():
+        tmp_final.unlink()
 
+    return ProcessState(
+        source=source,
+        final_path=final_path,
+        work_dir=work_dir,
+        cfg=cfg,
+        current=source,
+        steps=steps,
+        signature=signature,
+        tmp_final=tmp_final,
+        scale=scale,
+        need_upscale=need_upscale,
+        mosaic_ok=mosaic_ok,
+        need_meta=bool(meta_cfg.get("enabled", True)),
+        note=str(meta_cfg.get("custom_note") or ""),
+        cleanup=cleanup,
+    )
+
+
+def advance_upscale(state: ProcessState) -> ProcessState:
+    if not state.need_upscale:
+        return state
+    up_path = state.work_dir / f"up{state.scale}x.png"
+    current, engine = upscale_best(state.current, up_path, state.scale, state.cfg)
+    state.current = current
+    state.steps.append(f"upscale:{state.scale}x:{engine}")
+    return state
+
+
+def advance_mosaic(state: ProcessState) -> ProcessState:
+    if not state.mosaic_ok:
+        return state
+    mosaic_cfg = state.cfg.get("mosaic") or {}
     try:
-        if work_dir.exists():
-            shutil.rmtree(work_dir, ignore_errors=True)
-        work_dir.mkdir(parents=True, exist_ok=True)
-        if tmp_final.exists():
-            tmp_final.unlink()
+        state.current = run_anr_mosaic(state.current, state.work_dir, state.cfg)
+        state.steps.append(f"mosaic:{mosaic_cfg.get('method', '像素')}")
+    except MosaicNoTarget:
+        state.steps.append("mosaic:none")
+        state.missed_mosaic = True
+    except Exception as exc:
+        state.steps.append(f"mosaic:skip({exc})")
+        state.missed_mosaic = True
+    return state
 
-        runtime = mosaic_runtime_status(cfg) if need_mosaic else {"ok": False}
-        mosaic_ok = bool(need_mosaic and runtime.get("ok"))
-        if need_mosaic and not mosaic_ok:
-            steps.append("mosaic:unavailable")
 
-        if need_upscale:
-            up_path = work_dir / f"up{scale}x.png"
-            _current, engine = upscale_best(current, up_path, scale, cfg)
-            current = _current
-            steps.append(f"upscale:{scale}x:{engine}")
+def abort_process(state: ProcessState) -> None:
+    if state.tmp_final.exists():
+        try:
+            state.tmp_final.unlink()
+        except OSError:
+            pass
+    if state.cleanup:
+        shutil.rmtree(state.work_dir, ignore_errors=True)
 
-        if mosaic_ok:
-            try:
-                current = run_anr_mosaic(current, work_dir, cfg)
-                steps.append(f"mosaic:{mosaic_cfg.get('method', '像素')}")
-            except MosaicNoTarget:
-                steps.append("mosaic:none")
-                missed_mosaic = True
-            except Exception as exc:
-                steps.append(f"mosaic:skip({exc})")
-                missed_mosaic = True
 
-        if need_meta:
-            _strip_to(current, tmp_final, note=note)
-            steps.append("metadata:clean")
+def finish_process(state: ProcessState) -> ProcessResult:
+    try:
+        if state.need_meta:
+            _strip_to(state.current, state.tmp_final, note=state.note)
+            state.steps.append("metadata:clean")
         else:
-            _copy_as_png(current, tmp_final)
+            _copy_as_png(state.current, state.tmp_final)
 
-        if not tmp_final.exists() or tmp_final.stat().st_size <= 0:
+        if not state.tmp_final.exists() or state.tmp_final.stat().st_size <= 0:
             raise RuntimeError("没有写出成品文件")
-        final_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp_final.replace(final_path)
-        save_signature(record_dir, final_path, signature)
+        state.final_path.parent.mkdir(parents=True, exist_ok=True)
+        state.tmp_final.replace(state.final_path)
+        get_store(state.cfg).put(state.final_path, state.signature)
     except Exception:
-        if tmp_final.exists():
-            try:
-                tmp_final.unlink()
-            except OSError:
-                pass
+        abort_process(state)
         raise
-    finally:
-        if cleanup:
-            shutil.rmtree(work_dir, ignore_errors=True)
-
+    if state.cleanup:
+        shutil.rmtree(state.work_dir, ignore_errors=True)
     return ProcessResult(
         ok=True,
-        source=source,
-        output_name=output_name,
-        final_path=final_path,
-        steps=steps,
-        message="漏打，请复查" if missed_mosaic else "完成",
-        missed_mosaic=missed_mosaic,
+        source=state.source,
+        output_name=state.final_path.name,
+        final_path=state.final_path,
+        steps=state.steps,
+        message="漏打，请复查" if state.missed_mosaic else "完成",
+        missed_mosaic=state.missed_mosaic,
     )
+
+
+def process_one(
+    source: Path,
+    final_path: Path,
+    work_dir: Path,
+    cfg: dict[str, Any],
+) -> ProcessResult:
+    state = start_process(source, final_path, work_dir, cfg)
+    if state.result is not None:
+        return state.result
+    try:
+        advance_upscale(state)
+        advance_mosaic(state)
+        return finish_process(state)
+    except Exception:
+        abort_process(state)
+        raise
 
 
 def process_item(item: QueueItem, work_root: Path, cfg: dict[str, Any]) -> ProcessResult:
@@ -166,6 +257,10 @@ def process_item(item: QueueItem, work_root: Path, cfg: dict[str, Any]) -> Proce
     item.status = "skip" if result.skipped else ("ok" if result.ok else "fail")
     item.error = "" if result.ok else result.message
     return result
+
+
+def item_work_dir(item: QueueItem, work_root: Path) -> Path:
+    return work_root / (item.key.replace(":", "").replace("\\", "_").replace("/", "_")[-80:])
 
 
 def make_session_dir(output_root: str | Path) -> Path:

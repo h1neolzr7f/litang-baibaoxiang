@@ -124,9 +124,15 @@ def _parse_yolo_results(results, ox: float = 0.0, oy: float = 0.0) -> list[tuple
     return found
 
 
-def _yolo_predict(model, source: Path, conf: float, imgsz: int, augment: bool):
+def _yolo_predict(model, source, conf: float, imgsz: int, augment: bool):
+    if hasattr(source, "shape"):
+        import numpy as np
+
+        payload = np.ascontiguousarray(source)
+    else:
+        payload = str(source)
     kwargs = {
-        "source": str(source),
+        "source": payload,
         "conf": float(conf),
         "imgsz": int(imgsz),
         "iou": 0.45,
@@ -143,22 +149,28 @@ def _yolo_predict(model, source: Path, conf: float, imgsz: int, augment: bool):
         return model.predict(**kwargs)
 
 
-def _save_enhanced(source: Path, dest: Path) -> Path:
-    from PIL import Image, ImageEnhance, ImageOps
+def _load_rgb_array(source: Path):
+    import numpy as np
+    from PIL import Image
 
     with Image.open(source) as raw:
         img = raw.convert("RGB")
-        img = ImageOps.autocontrast(img, cutoff=1)
-        img = ImageEnhance.Contrast(img).enhance(1.18)
-        img = ImageEnhance.Sharpness(img).enhance(1.22)
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        img.save(dest, format="PNG", compress_level=1)
-    return dest
+        width, height = img.size
+        return width, height, np.asarray(img)
+
+
+def _enhance_rgb(arr):
+    import numpy as np
+    from PIL import Image, ImageEnhance, ImageOps
+
+    img = Image.fromarray(arr)
+    img = ImageOps.autocontrast(img, cutoff=1)
+    img = ImageEnhance.Contrast(img).enhance(1.18)
+    img = ImageEnhance.Sharpness(img).enhance(1.22)
+    return np.asarray(img)
 
 
 def collect_strong_boxes(model, source_path: str, extra: dict) -> list[tuple[str, float, float, float, float]]:
-    from PIL import Image
-
     extra = extra or {}
     sensitivity = int(extra.get("sensitivity") or 8)
     conf = float(extra.get("conf") or sensitivity_to_conf(sensitivity))
@@ -168,52 +180,30 @@ def collect_strong_boxes(model, source_path: str, extra: dict) -> list[tuple[str
     use_tiles = bool(extra.get("tiles", True))
     use_enhance = bool(extra.get("enhance", True))
     use_augment = bool(extra.get("augment", True))
-    session_dir = str(extra.get("work_dir") or extra.get("session_dir") or "")
-    work = _work_dir(session_dir)
     src = Path(source_path)
-    detect_src = src
-    temps: list[Path] = []
-    try:
-        if _needs_ascii_copy(src):
-            detect_src = work / "src.png"
-            with Image.open(src) as raw:
-                raw.convert("RGB").save(detect_src, format="PNG", compress_level=1)
-            temps.append(detect_src)
-        with Image.open(detect_src) as probe:
-            width, height = probe.size
-        sizes = []
-        for size in (640, imgsz):
-            if size not in sizes:
-                sizes.append(size)
-        boxes: list[tuple[str, float, float, float, float]] = []
-        for size in sizes:
-            boxes.extend(_parse_yolo_results(_yolo_predict(model, detect_src, conf, size, use_augment and size >= 960)))
-        if use_enhance:
-            enhanced = work / "enhanced.png"
-            _save_enhanced(detect_src, enhanced)
-            temps.append(enhanced)
-            boxes.extend(_parse_yolo_results(_yolo_predict(model, enhanced, max(0.04, conf - 0.02), imgsz, False)))
-        if use_tiles:
-            for x1, y1, x2, y2 in tile_windows(width, height)[1:]:
-                crop = work / f"tile_{x1}_{y1}.png"
-                with Image.open(detect_src) as raw:
-                    raw.convert("RGB").crop((x1, y1, x2, y2)).save(crop, format="PNG", compress_level=1)
-                temps.append(crop)
-                tile_size = 960 if max(x2 - x1, y2 - y1) >= 900 else 640
-                boxes.extend(
-                    _parse_yolo_results(
-                        _yolo_predict(model, crop, max(0.04, conf - 0.02), tile_size, False),
-                        ox=x1,
-                        oy=y1,
-                    )
+    width, height, arr = _load_rgb_array(src)
+    sizes = []
+    for size in (640, imgsz):
+        if size not in sizes:
+            sizes.append(size)
+    boxes: list[tuple[str, float, float, float, float]] = []
+    for size in sizes:
+        boxes.extend(_parse_yolo_results(_yolo_predict(model, arr, conf, size, use_augment and size >= 960)))
+    if use_enhance:
+        enhanced = _enhance_rgb(arr)
+        boxes.extend(_parse_yolo_results(_yolo_predict(model, enhanced, max(0.04, conf - 0.02), imgsz, False)))
+    if use_tiles:
+        for x1, y1, x2, y2 in tile_windows(width, height)[1:]:
+            crop = arr[y1:y2, x1:x2]
+            tile_size = 960 if max(x2 - x1, y2 - y1) >= 900 else 640
+            boxes.extend(
+                _parse_yolo_results(
+                    _yolo_predict(model, crop, max(0.04, conf - 0.02), tile_size, False),
+                    ox=x1,
+                    oy=y1,
                 )
-        return boxes
-    finally:
-        for path in temps:
-            try:
-                path.unlink(missing_ok=True)
-            except Exception:
-                pass
+            )
+    return boxes
 
 
 def write_mask(source_path: str, boxes: list[list[int]], dest: Path) -> Path:

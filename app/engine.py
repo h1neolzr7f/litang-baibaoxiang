@@ -12,10 +12,18 @@ from app.collect import QueueItem
 from app.config import save_config
 from app.eta import EtaEstimator
 from app.mosaic import MosaicSession, mosaic_runtime_status
-from app.quality import quality_signature, same_quality
+from app.quality import SignatureStore, get_store, quality_signature
 from app.upscale import upscale_status
 from app.output import assign_destinations, make_session_dir, output_label, resolve_output_root
-from app.pipeline import process_item
+from app.pipeline import (
+    abort_process,
+    advance_mosaic,
+    advance_upscale,
+    finish_process,
+    item_work_dir,
+    process_item,
+    start_process,
+)
 from app.preflight import build_preflight
 from app.util import allow_sleep, format_bytes, format_duration, prevent_sleep
 
@@ -41,13 +49,32 @@ def _append(path: Path, line: str) -> None:
 def _mark_existing(items: list[QueueItem], cfg: dict[str, Any]) -> None:
     if not cfg.get("skip_existing", True):
         return
-    record = Path(cfg["_record_dir"]) if cfg.get("_record_dir") else None
+    store = get_store(cfg)
     signature = quality_signature(cfg)
     for item in items:
         dest = item.dest
-        if dest and same_quality(record, dest, signature):
+        if dest and store.matches(dest, signature):
             item.status = "skip"
             item.steps = ["skip:same-quality"]
+
+
+def _using_gpu_upscale(cfg: dict[str, Any]) -> bool:
+    up = cfg.get("upscale") or {}
+    if not up.get("enabled", True):
+        return False
+    engine = str(up.get("engine") or "auto")
+    if engine not in {"", "auto", "realcugan", "realcugan-pro"}:
+        return False
+    return bool(upscale_status(cfg).get("ok"))
+
+
+def _parallel_plan(cfg: dict[str, Any], mosaic_on: bool) -> tuple[int, bool]:
+    """返回 (线程数, 是否超分/打码流水线重叠)。不降低画质。"""
+    if _using_gpu_upscale(cfg) and mosaic_on:
+        return 1, True
+    if _using_gpu_upscale(cfg):
+        return 1, False
+    return max(1, min(int(cfg.get("workers") or 2), 3)), False
 
 
 def _record_dir(session_dir: Path | None, cfg: dict[str, Any], items: list[QueueItem] | None = None) -> Path:
@@ -121,8 +148,10 @@ def run_job(
     log_dir = _record_dir(session_dir, cfg, items)
     log_dir.mkdir(parents=True, exist_ok=True)
     cfg["_record_dir"] = str(log_dir)
+    cfg["_sig_store"] = SignatureStore(log_dir)
     _mark_existing(items, cfg)
     runtime = mosaic_runtime_status(cfg)
+    cfg["_mosaic_runtime"] = runtime
     preflight = build_preflight(items, cfg, session_dir, mosaic_available=bool(runtime.get("ok")))
     log_path = log_dir / "处理记录.txt"
     done_path = log_dir / "completed.jsonl"
@@ -194,8 +223,7 @@ def run_job(
         return {"ok": True, "message": message, "session": str(session_dir or log_dir), "ok_count": ok, "fail_count": 0}
 
     mosaic_on = bool((cfg.get("mosaic") or {}).get("enabled") and runtime.get("ok"))
-    use_gpu_upscale = bool((cfg.get("upscale") or {}).get("enabled", True) and upscale_status(cfg).get("ok"))
-    workers = 1 if mosaic_on or use_gpu_upscale else max(1, min(int(cfg.get("workers") or 2), 3))
+    workers, staged = _parallel_plan(cfg, mosaic_on)
     mosaic_session = None
     if mosaic_on:
         try:
@@ -266,6 +294,11 @@ def run_job(
             )
         emit(snapshot("running", message, extra))
 
+    def apply_result(item: QueueItem, result) -> None:
+        item.steps = result.steps
+        item.status = "skip" if result.skipped else ("ok" if result.ok else "fail")
+        item.error = "" if result.ok else result.message
+
     def worker() -> None:
         while not cancelled():
             control.wait_if_paused()
@@ -288,16 +321,101 @@ def run_job(
             except Exception as exc:
                 finish_item(item, time.monotonic() - began, error=str(exc))
 
-    try:
-        threads = [threading.Thread(target=worker, daemon=True, name=f"litang-worker-{idx}") for idx in range(workers)]
+    def run_staged() -> None:
+        from queue import Queue
+
+        mid: Queue = Queue(maxsize=1)
+        fin: Queue = Queue(maxsize=1)
+
+        def upscale_loop() -> None:
+            try:
+                while not cancelled():
+                    control.wait_if_paused()
+                    if cancelled():
+                        break
+                    item = take_next()
+                    if item is None:
+                        break
+                    emit(
+                        snapshot(
+                            "running",
+                            f"正在处理 {item.source.name}（{format_bytes(item.size)}）",
+                            {"current": str(item.source), "item_status": "running", "current_size": item.size},
+                        )
+                    )
+                    began = time.monotonic()
+                    try:
+                        if item.dest is None:
+                            raise RuntimeError("还没有分配成品路径")
+                        state = start_process(item.source, item.dest, item_work_dir(item, work_root), cfg)
+                        if state.result is not None:
+                            apply_result(item, state.result)
+                            finish_item(item, time.monotonic() - began)
+                            continue
+                        advance_upscale(state)
+                        mid.put((item, state, began))
+                    except Exception as exc:
+                        finish_item(item, time.monotonic() - began, error=str(exc))
+            finally:
+                mid.put(None)
+
+        def mosaic_loop() -> None:
+            try:
+                while True:
+                    payload = mid.get()
+                    if payload is None:
+                        return
+                    item, state, began = payload
+                    try:
+                        advance_mosaic(state)
+                        fin.put((item, state, began))
+                    except Exception as exc:
+                        abort_process(state)
+                        finish_item(item, time.monotonic() - began, error=str(exc))
+            finally:
+                fin.put(None)
+
+        def finalize_loop() -> None:
+            while True:
+                payload = fin.get()
+                if payload is None:
+                    return
+                item, state, began = payload
+                try:
+                    result = finish_process(state)
+                    apply_result(item, result)
+                    finish_item(item, time.monotonic() - began)
+                except Exception as exc:
+                    abort_process(state)
+                    finish_item(item, time.monotonic() - began, error=str(exc))
+
+        threads = [
+            threading.Thread(target=upscale_loop, daemon=True, name="litang-upscale"),
+            threading.Thread(target=mosaic_loop, daemon=True, name="litang-mosaic"),
+            threading.Thread(target=finalize_loop, daemon=True, name="litang-finalize"),
+        ]
         for thread in threads:
             thread.start()
         for thread in threads:
             thread.join()
+
+    try:
+        if staged:
+            run_staged()
+        else:
+            threads = [threading.Thread(target=worker, daemon=True, name=f"litang-worker-{idx}") for idx in range(workers)]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
     finally:
         if mosaic_session is not None:
             mosaic_session.close()
             cfg.pop("_mosaic_session", None)
+        try:
+            get_store(cfg).flush()
+        except Exception:
+            pass
         shutil_rm = True
         try:
             import shutil
