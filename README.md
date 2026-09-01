@@ -1,120 +1,59 @@
-<div align="center">
-
 # 理塘百宝箱
 
-### 本地超分 · 自动打码 · 清元数据
+本地图像后处理工具，提供批量超分、敏感区域打码和 PNG 元数据清理。Windows 源码与一键包面向大批量队列；Release 还提供一个历史 Android arm64 安装包。
 
-**Windows 一键包 + Android 安装包。原图不会被修改。**
+[v2.4.3 Release](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/tag/v2.4.3) · [产品说明](docs/PRODUCT.md) · [参与贡献](CONTRIBUTING.md) · [第三方组件](THIRD_PARTY.md)
 
-![Version](https://img.shields.io/badge/Version-2.4.3-3E6B45)
-![Windows](https://img.shields.io/badge/Windows-一键包-0078D4?logo=windows&logoColor=white)
-![Android](https://img.shields.io/badge/Android-arm64_APK-3DDC84?logo=android&logoColor=white)
-![License](https://img.shields.io/badge/License-AGPL--3.0-red)
-![Privacy](https://img.shields.io/badge/Privacy-Local--first-7A5AF8)
+![Windows 主界面](docs/screenshots/toolbox-home.png)
 
-[下载 Windows 一键包](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/tag/v2.4.3) ·
-[下载 Android APK](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/tag/v2.4.3) ·
-[使用说明](docs/PRODUCT.md) ·
-[参与贡献](CONTRIBUTING.md) ·
-[第三方](THIRD_PARTY.md)
+> 截图由本仓库当前源码在隔离环境中启动后采集，输出位置使用 `C:\Temp\litang-demo-output` 演示路径；没有导入私人图片。
 
-</div>
+## 能力范围
 
-> [!TIP]
-> **第一次来？** Windows 下 [v2.4.3 一键包](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/tag/v2.4.3) 完整解压后双击 `启动理塘百宝箱.bat`。手机下同页的 `litang-baibaoxiang-v0.29-android-arm64.apk`，允许未知来源后安装。两边都不用再装 Python 或 ANR。
-
-## 一分钟了解
-
-| 你原来要做的事 | 理塘百宝箱 |
-| --- | --- |
-| 对着文件夹一张张超分 | 拖进文件夹，按队列跑，可暂停可续 |
-| 漏打、打不全 | 低阈值、切块、框外扩；漏打单独记清单 |
-| 成品里还留着提示词 | 清元数据，重写成干净 PNG |
-| 换电脑还要搭环境 | Windows 一键包自带运行时；手机有现成 APK |
-
-它不是生图软件，只做**已经画好的图**的后处理。
-
-## 下载
-
-| 平台 | 文件 | 大约体积 |
-| --- | --- | --- |
-| **Windows 10/11** | [`litang-baibaoxiang-v2.4.3-windows.zip`](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/download/v2.4.3/litang-baibaoxiang-v2.4.3-windows.zip) | 压缩约 330 MB，解压约 1 GB |
-| **Android arm64** | [`litang-baibaoxiang-v0.29-android-arm64.apk`](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/download/v2.4.3/litang-baibaoxiang-v0.29-android-arm64.apk) | 约 43 MB |
-
-请从 [Releases](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/tag/v2.4.3) 下载。不要只拷一个启动文件。
-
-### Windows
-
-1. 解压整个文件夹  
-2. 双击 `启动理塘百宝箱.bat`（想要桌面图标再点 `创建桌面快捷方式.bat`）  
-3. 先选成品放哪里，再把图片或文件夹拖进去，点绿色框里或窗口底下的「开始处理」  
-
-成品默认在包内 `输出`。原图不改。
-
-### Android
-
-1. 安装 APK（需允许未知来源）  
-2. 选图后在手机上打码，成品进相册 `Pictures/LitangToolbox`  
-3. 只要 64 位 Android。详细说明见 [android/README.md](android/README.md)
-
-## 能做什么
-
-| 能力 | Windows | Android |
+| 能力 | Windows 源码 | Android Release |
 | --- | :---: | :---: |
-| 自动识别并打码（欧金金 / 欧芒果 / 欧派派） | ✅ | ✅ |
-| 识别加强：低阈值、切块、框外扩 | ✅ | 机内 ONNX |
-| 超分 2/3/4 倍（Real-CUGAN 专业版优先） | ✅ | — |
-| 清元数据 | ✅ | ✅ |
-| 十几 GB 文件夹排队、ETA、磁盘预检 | ✅ | — |
-| 暂停 / 失败重试 / 漏打清单 | ✅ | — |
+| 图片/文件夹队列与断点跳过 | 是 | 适合单张或小批量 |
+| 像素、模糊等打码 | 是，需要检测运行时 | 是，APK 内机内 ONNX |
+| Real-CUGAN 2/3/4 倍超分 | 是，需要外部运行时 | 否 |
+| PNG 元数据清理 | 是 | 是 |
+| 保留目录结构与输出预检 | 是 | 否 |
 
-欧西利没有独立模型类别，只能靠外扩尽量盖到。漏打请自己再看一眼。
+程序写入新的输出文件，不应修改原图。自动检测不能保证完整覆盖，发布或上传前仍需人工复核。
 
-## 自己跑 Windows 源码
-
-需要本机已有 Auto-NovelAI-Refactor 打码环境（自带 Python、YOLO、Real-CUGAN）。
+## Windows 源码运行
 
 ```bat
 git clone https://github.com/h1neolzr7f/litang-baibaoxiang.git
 cd litang-baibaoxiang
 python -m venv .venv
-.venv\Scripts\python.exe -m pip install -r requirements.txt pytest
-启动理塘百宝箱.bat
+.venv\Scripts\pip.exe install -r requirements.txt pytest
+.venv\Scripts\python.exe -m app
 ```
 
-开发机重新出包：
+GUI、队列、输出规划、元数据处理与几何打码逻辑可以直接运行。完整的自动识别和超分还依赖仓库外的 ANR/YOLO/Real-CUGAN 运行时与模型；这些权重和可执行文件不在 git 中。
+
+## 测试
 
 ```bat
-打包一键包.bat
+.venv\Scripts\python.exe -m pytest -q tests --ignore=tests/test_anr_smoke.py
 ```
 
-```bat
-.venv\Scripts\python.exe -m pytest tests --ignore=tests/test_anr_smoke.py
-```
+本次整理的结果为 **37 passed**。`test_anr_smoke.py` 需要外部 ANR 环境，未计入离线仓库验证。范围和命令见 [docs/VALIDATION.md](docs/VALIDATION.md)。
 
-## 目录
+## Release 与可复现性
 
-```text
-app/                 Windows 界面与流水线
-android/             手机版说明（安装包在 Releases）
-tools/               打 Windows 一键包、裁运行时
-tests/               单元测试
-docs/                产品说明
-启动理塘百宝箱.bat
-打包一键包.bat
-```
+- Windows v2.4.3 一键包由维护者开发环境打包，包含仓库外运行时；使用时请从 Release 下载完整压缩包。
+- Android v0.29 APK 发布在同一 Release，但历史 Android Java 工程和模型权重不在本仓库。当前仓库因此**不能从源码复现该 APK**；[android/README.md](android/README.md) 仅记录安装与行为。
+- APK、模型、签名密钥和大型运行时应继续放在 Release 或各自上游，不应提交到 git。
 
-## 许可与边界
+这一区分有助于贡献者判断哪些功能可以从当前源码验证，哪些仍依赖维护者的外部发布环境。
 
-源码使用 [AGPL-3.0](LICENSE)。一键包和 APK 里的模型、ONNX Runtime、Real-CUGAN 仍按各自许可证，见 [THIRD_PARTY.md](THIRD_PARTY.md)。
+## 数据与安全
 
-这是非官方后处理工具，和 NovelAI / pixiv 没有隶属关系。不要把打码结果当成审核或法律意义上的完整覆盖。完整边界见 [DISCLAIMER.md](DISCLAIMER.md)。
+- 不要在 Issue 中上传待处理原图、模型、绝对路径或私人输出目录。
+- 打码结果不是内容审核或法律意义上的保证。
+- 从第三方取得的模型和运行时应核对来源、校验值与许可证。
 
----
+## 许可证
 
-<div align="center">
-
-**理塘百宝箱 2.4.3** · Windows 一键包 + Android APK  
-请从 [Releases](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/tag/v2.4.3) 下载。
-
-</div>
+仓库源码按 [AGPL-3.0](LICENSE) 发布。PyTorch、Ultralytics、ONNX Runtime、Real-CUGAN、模型权重和 Android APK 中的组件仍使用各自许可证，详见 [THIRD_PARTY.md](THIRD_PARTY.md)。
