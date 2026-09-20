@@ -59,6 +59,9 @@ def test_start_buttons_stay_inside_window() -> None:
             assert _visible_in_window(btn, app)
         assert app.current_label.winfo_viewable()
         assert _visible_in_window(app.current_label, app)
+        assert app.progress_text.cget("text") == "0 / 0"
+        assert _visible_in_window(app.progress_text, app)
+        assert _visible_in_window(app.footer_start_btn, app)
     finally:
         app.destroy()
 

@@ -50,8 +50,13 @@ def build_preflight(
     scale = int(up.get("scale") or 2) if up.get("enabled", True) else 1
     if up.get("enabled", True) and scale >= 3 and total_bytes >= 2 * 1024 * 1024 * 1024:
         warnings.append("放大 3 倍或 4 倍时，十几 GB 原图会变成非常大的成品，时间和磁盘都会明显增加。")
-    if (cfg.get("mosaic") or {}).get("enabled") and not mosaic_available:
-        warnings.append("打码环境不可用，这次会跳过打码，超分和清元数据照常做。")
+    mosaic = cfg.get("mosaic") or {}
+    if mosaic.get("enabled"):
+        parts = [str(part).strip() for part in (mosaic.get("parts") or []) if str(part).strip()]
+        if not parts:
+            blockers.append("打码已开启，但没有勾选任何部位。请至少勾选一个，或关掉打码。")
+        elif not mosaic_available:
+            warnings.append("打码环境不可用，这次会跳过打码，超分和清元数据照常做。")
     if skipped:
         warnings.append(f"有 {len(skipped)} 张成品已经存在，将自动跳过。")
 

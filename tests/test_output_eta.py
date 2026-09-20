@@ -59,3 +59,24 @@ def test_eta_and_preflight(tmp_path: Path) -> None:
     assert pre["ok"]
     assert pre["count"] == 1
     assert estimate_output_bytes(10_000_000, {"upscale": {"enabled": True, "scale": 2}}) > 10_000_000
+
+
+def test_preflight_blocks_mosaic_without_parts(tmp_path: Path) -> None:
+    src = tmp_path / "a.png"
+    _png(src)
+    items = scan_images([src])
+    assign_destinations(items, {"output_mode": "folder", "output_root": str(tmp_path / "out")}, tmp_path / "out")
+    pre = build_preflight(
+        items,
+        {
+            "output_mode": "folder",
+            "output_root": str(tmp_path / "out"),
+            "upscale": {"enabled": False},
+            "mosaic": {"enabled": True, "parts": []},
+            "metadata": {"enabled": True},
+        },
+        tmp_path / "out",
+        mosaic_available=True,
+    )
+    assert not pre["ok"]
+    assert any("部位" in item for item in pre["blockers"])

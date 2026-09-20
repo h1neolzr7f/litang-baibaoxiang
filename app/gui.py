@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import threading
 from pathlib import Path
 from tkinter import filedialog, messagebox
@@ -15,7 +14,7 @@ from app.mosaic import MOSAIC_METHODS, MOSAIC_PARTS, mosaic_runtime_status
 from app.upscale import upscale_status
 from app.output import assign_destinations, make_session_dir, resolve_output_root
 from app.preflight import build_preflight
-from app.util import format_bytes, format_duration
+from app.util import format_bytes, format_duration, image_dialog_filetypes, open_in_file_manager
 
 CREAM = "#F4EDE0"
 CARD = "#FFF9F0"
@@ -51,6 +50,50 @@ def fit_dialog_geometry(
     return width, height
 
 
+def format_progress_text(done: int, total: int) -> str:
+    if total <= 0:
+        return "0 / 0"
+    return f"{int(done)} / {int(total)}"
+
+
+def summarize_queue(items: list) -> dict[str, int]:
+    counts = {"ok": 0, "fail": 0, "skip": 0, "pending": 0, "running": 0}
+    for item in items:
+        status = str(getattr(item, "status", "pending") or "pending")
+        counts[status] = counts.get(status, 0) + 1
+    return counts
+
+
+def finish_status_text(counts: dict[str, int], cancelled: bool = False) -> str:
+    ok = int(counts.get("ok") or 0)
+    fail = int(counts.get("fail") or 0)
+    skip = int(counts.get("skip") or 0)
+    if cancelled:
+        return f"已停止：成功 {ok} · 失败 {fail} · 跳过 {skip}。已经做好的不用重做。"
+    if fail:
+        return f"处理结束：成功 {ok} · 失败 {fail} · 跳过 {skip}。失败的可以点「重试失败」。"
+    return f"全部完成：成功 {ok} · 跳过 {skip}。"
+
+
+def actionable_blockers(blockers: list[str] | None) -> list[str]:
+    return [item for item in (blockers or []) if item != "没有待处理图片。"]
+
+
+def resolve_open_output_target(
+    mode: str,
+    items: list,
+    session_dir: str,
+    output_root,
+) -> Path | None:
+    if mode == "beside":
+        if not items:
+            return None
+        return Path(items[0].source).parent / "理塘成品"
+    if session_dir:
+        return Path(session_dir)
+    return Path(output_root)
+
+
 class ConfirmDialog(ctk.CTkToplevel):
     def __init__(self, master: ctk.CTk, preflight: dict) -> None:
         super().__init__(master)
@@ -64,7 +107,15 @@ class ConfirmDialog(ctk.CTkToplevel):
             scale = 1.0
         width, height = fit_dialog_geometry(self.winfo_screenwidth(), self.winfo_screenheight(), scale)
         self.minsize(min(420, width), min(280, height))
+        wrap = max(260, width - 80)
         self.geometry(f"{width}x{height}")
+        try:
+            self.update_idletasks()
+            px = int(master.winfo_rootx()) + max(0, (int(master.winfo_width()) - width) // 2)
+            py = int(master.winfo_rooty()) + max(0, (int(master.winfo_height()) - height) // 2)
+            self.geometry(f"{width}x{height}+{max(0, px)}+{max(0, py)}")
+        except Exception:
+            pass
         try:
             self.grab_set()
         except Exception:
@@ -96,19 +147,23 @@ class ConfirmDialog(ctk.CTkToplevel):
         ctk.CTkLabel(
             body,
             text=f"成品放在：{preflight['output_text']}",
-            wraplength=480,
+            wraplength=wrap,
             justify="left",
             text_color=TEXT,
         ).pack(anchor="w", padx=16, pady=(12, 6))
-        ctk.CTkLabel(body, text="原图不会被修改。做到一半关掉，下次会自动跳过已经做好的。", text_color=MUTED).pack(
-            anchor="w", padx=16
-        )
+        ctk.CTkLabel(
+            body,
+            text="原图不会被修改。做到一半关掉，下次会自动跳过已经做好的。",
+            wraplength=wrap,
+            justify="left",
+            text_color=MUTED,
+        ).pack(anchor="w", padx=16)
         for warn in preflight.get("warnings") or []:
-            ctk.CTkLabel(body, text="注意：" + warn, wraplength=480, justify="left", text_color=WARN).pack(
+            ctk.CTkLabel(body, text="注意：" + warn, wraplength=wrap, justify="left", text_color=WARN).pack(
                 anchor="w", padx=16, pady=4
             )
         for block in preflight.get("blockers") or []:
-            ctk.CTkLabel(body, text="还不能开始：" + block, wraplength=480, justify="left", text_color=ERR).pack(
+            ctk.CTkLabel(body, text="还不能开始：" + block, wraplength=wrap, justify="left", text_color=ERR).pack(
                 anchor="w", padx=16, pady=4
             )
         self.bind("<Return>", lambda _e: self._yes() if preflight.get("ok") else None)
@@ -136,6 +191,14 @@ class LitangApp(ctk.CTk):
         self.control = JobControl()
         self.session_dir = ""
         self._estimate_after: str | None = None
+        self._resize_after: str | None = None
+        self._scanning = False
+        self._scan_token = 0
+        self._last_result_text = ""
+        self._queue_widgets: list = []
+        self._setting_widgets: list = []
+        self._upscale_widgets: list = []
+        self._mosaic_widgets: list = []
 
         self._build()
         self._refresh_anr()
@@ -143,7 +206,10 @@ class LitangApp(ctk.CTk):
         self._on_output_change()
         self._fit_window()
         self.after_idle(self._fit_window)
+        self.after_idle(self._apply_wraplengths)
         self.protocol("WM_DELETE_WINDOW", self._on_close)
+        self.bind("<Control-Return>", lambda _e: self._start())
+        self.bind("<Configure>", self._on_resize)
 
     def _window_scale(self) -> float:
         try:
@@ -171,12 +237,14 @@ class LitangApp(ctk.CTk):
         ctk.CTkLabel(header, text=APP_NAME, font=ctk.CTkFont(size=26, weight="bold"), text_color=TEXT).pack(
             anchor="w", padx=20, pady=(8, 0)
         )
-        ctk.CTkLabel(
+        self.header_hint = ctk.CTkLabel(
             header,
             text="先选成品放哪里，再把图片或文件夹拖进来。十几 GB 也能排队处理。原图保证不改。",
             font=ctk.CTkFont(size=14),
             text_color=MUTED,
-        ).pack(anchor="w", padx=20, pady=(2, 8))
+            justify="left",
+        )
+        self.header_hint.pack(anchor="w", padx=20, pady=(2, 8))
 
         place = ctk.CTkFrame(self, fg_color=CARD, corner_radius=16, border_width=1, border_color=LINE)
         place.pack(fill="x", padx=16, pady=(0, 8))
@@ -189,9 +257,11 @@ class LitangApp(ctk.CTk):
             ("beside", "放到每张原图旁边的「理塘成品」文件夹"),
             ("mirror", "按原来的文件夹结构，镜像到我指定的地方"),
         ):
-            ctk.CTkRadioButton(
+            radio = ctk.CTkRadioButton(
                 place, text=label, variable=self.var_mode, value=value, command=self._on_output_change, text_color=TEXT
-            ).pack(anchor="w", padx=18, pady=1)
+            )
+            radio.pack(anchor="w", padx=18, pady=1)
+            self._setting_widgets.append(radio)
 
         path_row = ctk.CTkFrame(place, fg_color="transparent")
         path_row.pack(fill="x", padx=18, pady=(8, 4))
@@ -199,22 +269,34 @@ class LitangApp(ctk.CTk):
         self.out_entry.pack(side="left", fill="x", expand=True)
         self.out_entry.insert(0, str(self.cfg.get("output_root") or ""))
         self.out_entry.bind("<KeyRelease>", lambda _e: self._on_output_change())
-        ctk.CTkButton(path_row, text="改位置", width=90, height=36, fg_color=ACCENT, hover_color=ACCENT_HOVER,
-                      command=self._pick_output).pack(side="left", padx=(8, 0))
+        self.pick_output_btn = ctk.CTkButton(
+            path_row, text="改位置", width=90, height=36, fg_color=ACCENT, hover_color=ACCENT_HOVER,
+            command=self._pick_output,
+        )
+        self.pick_output_btn.pack(side="left", padx=(8, 0))
         ctk.CTkButton(path_row, text="打开", width=70, height=36, fg_color="#C9B79A", hover_color="#B4A184",
                       text_color=TEXT, command=self._open_output).pack(side="left", padx=(8, 0))
+        self._setting_widgets.extend([self.out_entry, self.pick_output_btn])
 
         extra = ctk.CTkFrame(place, fg_color="transparent")
         extra.pack(fill="x", padx=18, pady=(2, 8))
         self.var_keep = ctk.BooleanVar(value=bool(self.cfg.get("keep_structure", True)))
         self.var_dated = ctk.BooleanVar(value=bool(self.cfg.get("dated_session", False)))
         self.var_skip = ctk.BooleanVar(value=bool(self.cfg.get("skip_existing", True)))
-        ctk.CTkCheckBox(extra, text="保持原来的子文件夹", variable=self.var_keep, command=self._on_output_change,
-                        text_color=TEXT).pack(side="left", padx=(0, 16))
-        ctk.CTkCheckBox(extra, text="另外新建一个时间文件夹", variable=self.var_dated, command=self._on_output_change,
-                        text_color=TEXT).pack(side="left", padx=(0, 16))
-        ctk.CTkCheckBox(extra, text="已经做过的自动跳过（可中断后续跑）", variable=self.var_skip,
-                        command=self._on_output_change, text_color=TEXT).pack(side="left")
+        self.keep_box = ctk.CTkCheckBox(
+            extra, text="保持原来的子文件夹", variable=self.var_keep, command=self._on_output_change, text_color=TEXT
+        )
+        self.keep_box.pack(side="left", padx=(0, 16))
+        self.dated_box = ctk.CTkCheckBox(
+            extra, text="另外新建一个时间文件夹", variable=self.var_dated, command=self._on_output_change, text_color=TEXT
+        )
+        self.dated_box.pack(side="left", padx=(0, 16))
+        self.skip_box = ctk.CTkCheckBox(
+            extra, text="已经做过的自动跳过（可中断后续跑）", variable=self.var_skip,
+            command=self._on_output_change, text_color=TEXT,
+        )
+        self.skip_box.pack(side="left")
+        self._setting_widgets.extend([self.keep_box, self.dated_box, self.skip_box])
 
         drop = ctk.CTkFrame(self, fg_color=DROP_BG, corner_radius=16, border_width=2, border_color=ACCENT)
         drop.pack(fill="x", padx=16, pady=(0, 8))
@@ -225,12 +307,20 @@ class LitangApp(ctk.CTk):
         self.drop_hint.pack()
         btns = ctk.CTkFrame(drop, fg_color="transparent")
         btns.pack(pady=(6, 10))
-        ctk.CTkButton(btns, text="选择图片", width=110, fg_color=ACCENT, hover_color=ACCENT_HOVER,
-                      command=self._pick_files).pack(side="left", padx=6)
-        ctk.CTkButton(btns, text="选择文件夹", width=110, fg_color=ACCENT, hover_color=ACCENT_HOVER,
-                      command=self._pick_folder).pack(side="left", padx=6)
-        ctk.CTkButton(btns, text="清空队列", width=90, fg_color="#C9B79A", hover_color="#B4A184",
-                      text_color=TEXT, command=self._clear_queue).pack(side="left", padx=6)
+        self.pick_files_btn = ctk.CTkButton(
+            btns, text="选择图片", width=110, fg_color=ACCENT, hover_color=ACCENT_HOVER, command=self._pick_files
+        )
+        self.pick_files_btn.pack(side="left", padx=6)
+        self.pick_folder_btn = ctk.CTkButton(
+            btns, text="选择文件夹", width=110, fg_color=ACCENT, hover_color=ACCENT_HOVER, command=self._pick_folder
+        )
+        self.pick_folder_btn.pack(side="left", padx=6)
+        self.clear_btn = ctk.CTkButton(
+            btns, text="清空队列", width=90, fg_color="#C9B79A", hover_color="#B4A184",
+            text_color=TEXT, command=self._clear_queue,
+        )
+        self.clear_btn.pack(side="left", padx=6)
+        self._queue_widgets.extend([self.pick_files_btn, self.pick_folder_btn, self.clear_btn])
         self.start_btn = ctk.CTkButton(
             btns,
             text="开始处理",
@@ -246,13 +336,19 @@ class LitangApp(ctk.CTk):
 
         footer = ctk.CTkFrame(self, fg_color="transparent")
         footer.pack(side="bottom", fill="x", padx=16, pady=(0, 10))
-        self.progress = ctk.CTkProgressBar(footer, progress_color=ACCENT, height=10)
-        self.progress.pack(fill="x")
+        prog_row = ctk.CTkFrame(footer, fg_color="transparent")
+        prog_row.pack(fill="x")
+        self.progress = ctk.CTkProgressBar(prog_row, progress_color=ACCENT, height=10)
+        self.progress.pack(side="left", fill="x", expand=True)
         self.progress.set(0)
-        self.status = ctk.CTkLabel(footer, text="空闲。先选成品位置，再拖入图片。", text_color=MUTED)
-        self.status.pack(anchor="w", pady=(6, 0))
-        self.current_label = ctk.CTkLabel(footer, text="当前：空闲", text_color=TEXT)
-        self.current_label.pack(anchor="w", pady=(0, 6))
+        self.progress_text = ctk.CTkLabel(prog_row, text="0 / 0", text_color=MUTED, width=72)
+        self.progress_text.pack(side="right", padx=(8, 0))
+        self.status = ctk.CTkLabel(
+            footer, text="空闲。先选成品位置，再拖入图片。", text_color=MUTED, justify="left", anchor="w"
+        )
+        self.status.pack(anchor="w", fill="x", pady=(6, 0))
+        self.current_label = ctk.CTkLabel(footer, text="当前：空闲", text_color=TEXT, justify="left", anchor="w")
+        self.current_label.pack(anchor="w", fill="x", pady=(0, 6))
         actions = ctk.CTkFrame(footer, fg_color="transparent")
         actions.pack(fill="x")
         self.footer_start_btn = ctk.CTkButton(
@@ -274,8 +370,11 @@ class LitangApp(ctk.CTk):
         self.stop_btn = ctk.CTkButton(actions, text="停止", width=80, height=42, fg_color="#C9B79A",
                                      hover_color="#B4A184", text_color=TEXT, command=self._stop, state="disabled")
         self.stop_btn.pack(side="left")
-        ctk.CTkButton(actions, text="重试失败", width=90, height=42, fg_color="#C9B79A", hover_color="#B4A184",
-                      text_color=TEXT, command=self._retry).pack(side="left", padx=8)
+        self.retry_btn = ctk.CTkButton(
+            actions, text="重试失败", width=90, height=42, fg_color="#C9B79A", hover_color="#B4A184",
+            text_color=TEXT, command=self._retry,
+        )
+        self.retry_btn.pack(side="left", padx=8)
         ctk.CTkButton(actions, text="打开成品文件夹", width=130, height=42, fg_color="#C9B79A",
                       hover_color="#B4A184", text_color=TEXT, command=self._open_output).pack(side="right")
 
@@ -293,10 +392,11 @@ class LitangApp(ctk.CTk):
         self.stats.pack(anchor="w", padx=16)
         self.eta_label = ctk.CTkLabel(left, text="预计时间会在加入图片后显示。", text_color=MUTED)
         self.eta_label.pack(anchor="w", padx=16, pady=(0, 6))
-        self.event_box = ctk.CTkTextbox(left, height=140, fg_color=CREAM, text_color=TEXT)
+        self.event_box = ctk.CTkTextbox(left, height=140, fg_color=CREAM, text_color=TEXT, wrap="word")
         self.event_box.pack(fill="both", expand=True, padx=12, pady=10)
-        self.event_box.insert("end", "把文件夹拖进来即可。不会把几千张图画成卡死的列表。\n")
+        self.event_box.insert("end", "把文件夹拖进来即可。不会把几千张图画成卡死的列表。处理记录可复制。\n")
         self.event_box.configure(state="disabled")
+        self.event_box.bind("<Button-1>", lambda _e: self.event_box.focus_set())
 
         right = ctk.CTkScrollableFrame(body, fg_color=CARD, corner_radius=16, width=340)
         right.pack(side="right", fill="y")
@@ -313,8 +413,11 @@ class LitangApp(ctk.CTk):
         self.var_method = ctk.StringVar(value=str(mo.get("method") or "像素"))
         saved_noise = str(up.get("noise") or "conservative")
         self.var_noise = ctk.StringVar(value="强力降噪" if saved_noise in {"denoise3x", "strong"} else "保守细节")
-        ctk.CTkCheckBox(right, text="超分（Real-CUGAN 专业版优先）", variable=self.var_upscale,
-                        command=self._refresh_estimate, text_color=TEXT).pack(anchor="w", padx=16, pady=4)
+        self.upscale_box = ctk.CTkCheckBox(
+            right, text="超分（Real-CUGAN 专业版优先）", variable=self.var_upscale,
+            command=self._on_feature_toggle, text_color=TEXT,
+        )
+        self.upscale_box.pack(anchor="w", padx=16, pady=4)
         scale_row = ctk.CTkFrame(right, fg_color="transparent")
         scale_row.pack(fill="x", padx=16, pady=(0, 8))
         ctk.CTkLabel(scale_row, text="放大倍数", text_color=MUTED).pack(side="left")
@@ -324,58 +427,80 @@ class LitangApp(ctk.CTk):
         noise_row = ctk.CTkFrame(right, fg_color="transparent")
         noise_row.pack(fill="x", padx=16, pady=(0, 8))
         ctk.CTkLabel(noise_row, text="超分风格", text_color=MUTED).pack(side="left")
-        ctk.CTkOptionMenu(
+        self.noise_menu = ctk.CTkOptionMenu(
             noise_row,
             values=["保守细节", "强力降噪"],
             variable=self.var_noise,
             width=130,
-        ).pack(side="right")
+        )
+        self.noise_menu.pack(side="right")
         self.upscale_label = ctk.CTkLabel(right, text="", wraplength=280, justify="left", text_color=MUTED)
         self.upscale_label.pack(anchor="w", padx=16, pady=(0, 8))
-        ctk.CTkCheckBox(right, text="打码（自动遮敏感部位）", variable=self.var_mosaic,
-                        command=self._refresh_estimate, text_color=TEXT).pack(anchor="w", padx=16, pady=4)
+        self.mosaic_box = ctk.CTkCheckBox(
+            right, text="打码（自动遮敏感部位）", variable=self.var_mosaic,
+            command=self._on_feature_toggle, text_color=TEXT,
+        )
+        self.mosaic_box.pack(anchor="w", padx=16, pady=4)
+        self._setting_widgets.extend([self.upscale_box, self.mosaic_box])
+        self._upscale_widgets.extend([self.scale_btn, self.noise_menu])
         ctk.CTkLabel(right, text="打码部位（可多选，默认全开）", text_color=MUTED).pack(anchor="w", padx=16, pady=(4, 2))
         saved_parts = set(mo.get("parts") or MOSAIC_PARTS)
         self.var_parts = {name: ctk.BooleanVar(value=name in saved_parts) for name in MOSAIC_PARTS}
         parts_row = ctk.CTkFrame(right, fg_color="transparent")
         parts_row.pack(fill="x", padx=16, pady=(0, 6))
+        self.part_boxes = []
         for index, name in enumerate(MOSAIC_PARTS):
-            ctk.CTkCheckBox(parts_row, text=name, variable=self.var_parts[name], width=140, text_color=TEXT).grid(
-                row=index // 2, column=index % 2, sticky="w", pady=2
+            box = ctk.CTkCheckBox(
+                parts_row, text=name, variable=self.var_parts[name], width=140, text_color=TEXT,
+                command=self._on_feature_toggle,
             )
+            box.grid(row=index // 2, column=index % 2, sticky="w", pady=2)
+            self.part_boxes.append(box)
         method_row = ctk.CTkFrame(right, fg_color="transparent")
         method_row.pack(fill="x", padx=16, pady=(0, 8))
         ctk.CTkLabel(method_row, text="打码方式", text_color=MUTED).pack(side="left")
-        ctk.CTkOptionMenu(method_row, values=MOSAIC_METHODS, variable=self.var_method, width=110).pack(side="right")
+        self.method_menu = ctk.CTkOptionMenu(method_row, values=MOSAIC_METHODS, variable=self.var_method, width=110)
+        self.method_menu.pack(side="right")
         self.var_intensity = ctk.IntVar(value=int(mo.get("intensity") or 36))
         ctk.CTkLabel(right, text="打码强度（越大越实）", text_color=MUTED).pack(anchor="w", padx=16)
         intensity_row = ctk.CTkFrame(right, fg_color="transparent")
         intensity_row.pack(fill="x", padx=16, pady=(0, 8))
         self.intensity_label = ctk.CTkLabel(intensity_row, text=str(self.var_intensity.get()), text_color=TEXT, width=36)
         self.intensity_label.pack(side="right")
-        ctk.CTkSlider(
+        self.intensity_slider = ctk.CTkSlider(
             intensity_row, from_=8, to=80, number_of_steps=72, variable=self.var_intensity, command=self._on_intensity
-        ).pack(side="left", fill="x", expand=True, padx=(0, 8))
+        )
+        self.intensity_slider.pack(side="left", fill="x", expand=True, padx=(0, 8))
         self.var_dilate = ctk.IntVar(value=int(mo.get("dilate") or 28))
         ctk.CTkLabel(right, text="遮罩外扩（防漏边）", text_color=MUTED).pack(anchor="w", padx=16)
         dilate_row = ctk.CTkFrame(right, fg_color="transparent")
         dilate_row.pack(fill="x", padx=16, pady=(0, 8))
         self.dilate_label = ctk.CTkLabel(dilate_row, text=str(self.var_dilate.get()), text_color=TEXT, width=36)
         self.dilate_label.pack(side="right")
-        ctk.CTkSlider(
+        self.dilate_slider = ctk.CTkSlider(
             dilate_row, from_=0, to=64, number_of_steps=64, variable=self.var_dilate, command=self._on_dilate
-        ).pack(side="left", fill="x", expand=True, padx=(0, 8))
+        )
+        self.dilate_slider.pack(side="left", fill="x", expand=True, padx=(0, 8))
         self.var_sensitivity = ctk.IntVar(value=int(mo.get("sensitivity") or 8))
         ctk.CTkLabel(right, text="识别灵敏度（越高越能抓到小/暗部位）", text_color=MUTED).pack(anchor="w", padx=16)
         sens_row = ctk.CTkFrame(right, fg_color="transparent")
         sens_row.pack(fill="x", padx=16, pady=(0, 8))
         self.sensitivity_label = ctk.CTkLabel(sens_row, text=str(self.var_sensitivity.get()), text_color=TEXT, width=36)
         self.sensitivity_label.pack(side="right")
-        ctk.CTkSlider(
+        self.sensitivity_slider = ctk.CTkSlider(
             sens_row, from_=1, to=10, number_of_steps=9, variable=self.var_sensitivity, command=self._on_sensitivity
-        ).pack(side="left", fill="x", expand=True, padx=(0, 8))
-        ctk.CTkCheckBox(right, text="清元数据（去掉提示词）", variable=self.var_meta,
-                        command=self._refresh_estimate, text_color=TEXT).pack(anchor="w", padx=16, pady=4)
+        )
+        self.sensitivity_slider.pack(side="left", fill="x", expand=True, padx=(0, 8))
+        self.meta_box = ctk.CTkCheckBox(
+            right, text="清元数据（去掉提示词）", variable=self.var_meta,
+            command=self._on_feature_toggle, text_color=TEXT,
+        )
+        self.meta_box.pack(anchor="w", padx=16, pady=4)
+        self._mosaic_widgets.extend(
+            [*self.part_boxes, self.method_menu, self.intensity_slider, self.dilate_slider, self.sensitivity_slider]
+        )
+        self._setting_widgets.append(self.meta_box)
+        self._sync_dependent_states()
         self.anr_label = ctk.CTkLabel(right, text="", wraplength=280, justify="left", text_color=MUTED)
         self.anr_label.pack(anchor="w", padx=16, pady=(10, 8))
         self.disk_label = ctk.CTkLabel(right, text="", wraplength=280, justify="left", text_color=MUTED)
@@ -383,6 +508,65 @@ class LitangApp(ctk.CTk):
 
     def _busy(self) -> bool:
         return bool(self.worker and self.worker.is_alive())
+
+    def _set_widget_states(self, widgets: list, state: str) -> None:
+        for widget in widgets:
+            try:
+                widget.configure(state=state)
+            except Exception:
+                pass
+
+    def _sync_dependent_states(self) -> None:
+        if self._busy() or self._scanning:
+            return
+        self._set_widget_states(self._upscale_widgets, "normal" if self.var_upscale.get() else "disabled")
+        self._set_widget_states(self._mosaic_widgets, "normal" if self.var_mosaic.get() else "disabled")
+        beside = self.var_mode.get() == "beside"
+        self.out_entry.configure(state="disabled" if beside else "normal")
+        self.keep_box.configure(state="disabled" if beside else "normal")
+
+    def _set_interaction_locked(self, locked: bool) -> None:
+        state = "disabled" if locked else "normal"
+        self._set_widget_states(self._queue_widgets, state)
+        self._set_widget_states(self._setting_widgets, state)
+        self._set_widget_states(self._upscale_widgets, state)
+        self._set_widget_states(self._mosaic_widgets, state)
+        self.retry_btn.configure(state="disabled" if locked else "normal")
+        self._set_start_state("disabled" if locked else "normal")
+        if not locked:
+            self._sync_dependent_states()
+
+    def _on_feature_toggle(self) -> None:
+        self._sync_dependent_states()
+        self._refresh_estimate()
+
+    def _on_resize(self, _event=None) -> None:
+        if not self.winfo_exists():
+            return
+        if getattr(self, "_resize_after", None):
+            try:
+                self.after_cancel(self._resize_after)
+            except Exception:
+                pass
+        self._resize_after = self.after(120, self._apply_wraplengths)
+
+    def _apply_wraplengths(self) -> None:
+        self._resize_after = None
+        if not self.winfo_exists():
+            return
+        width = max(320, int(self.winfo_width() or 800))
+        wide = max(360, width - 80)
+        mid = max(240, width // 2 - 40)
+        try:
+            self.header_hint.configure(wraplength=wide)
+            self.status.configure(wraplength=wide)
+            self.current_label.configure(wraplength=wide)
+            self.stats.configure(wraplength=max(280, width - 420))
+            self.upscale_label.configure(wraplength=mid)
+            self.anr_label.configure(wraplength=mid)
+            self.disk_label.configure(wraplength=mid)
+        except Exception:
+            pass
 
     def _hook_drag_drop(self) -> None:
         try:
@@ -434,8 +618,7 @@ class LitangApp(ctk.CTk):
         self._refresh_estimate()
 
     def _selected_parts(self) -> list[str]:
-        parts = [name for name in MOSAIC_PARTS if self.var_parts[name].get()]
-        return parts or list(MOSAIC_PARTS)
+        return [name for name in MOSAIC_PARTS if self.var_parts[name].get()]
 
     def _mosaic_cfg(self, base: dict | None = None) -> dict:
         current = dict((base or self.cfg).get("mosaic") or {})
@@ -472,9 +655,7 @@ class LitangApp(ctk.CTk):
         return cfg
 
     def _on_output_change(self) -> None:
-        beside = self.var_mode.get() == "beside"
-        state = "disabled" if beside else "normal"
-        self.out_entry.configure(state=state)
+        self._sync_dependent_states()
         self._refresh_estimate()
 
     def _skip_roots(self) -> list[str]:
@@ -505,16 +686,28 @@ class LitangApp(ctk.CTk):
         if self._busy():
             self._append_event("正在处理，先不要继续往里丢。处理完或停止后再加。")
             return
+        if self._scanning:
+            self._append_event("还在扫描上一批，请稍等再加。")
+            return
+        self._scan_token += 1
+        token = self._scan_token
+        self._scanning = True
+        self._set_widget_states(self._queue_widgets, "disabled")
+        self._set_start_state("disabled")
         self.drop_title.configure(text="正在扫描，请稍等…")
+        self.status.configure(text="正在扫描文件夹，扫完才能开始。")
         skip_roots = self._skip_roots()
 
         def work() -> None:
             found = scan_images(raw_paths, skip_roots=skip_roots)
-            self.after(0, lambda: self._merge_items(found))
+            self.after(0, lambda: self._merge_items(found, token))
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _merge_items(self, found: list[QueueItem]) -> None:
+    def _merge_items(self, found: list[QueueItem], token: int | None = None) -> None:
+        if token is not None and token != self._scan_token:
+            return
+        self._scanning = False
         existed = {item.key for item in self.items}
         added = 0
         with self.scan_lock:
@@ -527,15 +720,29 @@ class LitangApp(ctk.CTk):
         if added == 0:
             self._append_event("没有新的图片。可能都已在队列里，或文件夹里没有图。")
         else:
+            self._last_result_text = ""
             self._append_event(f"加入 {added} 张，当前共 {len(self.items)} 张。")
-        self.drop_title.configure(text=f"队列里有 {len(self.items)} 张图")
+        self.drop_title.configure(
+            text=f"队列里有 {len(self.items)} 张图" if self.items else "把图片或文件夹拖到这里"
+        )
+        if not self._busy():
+            self._set_widget_states(self._queue_widgets, "normal")
+            self._set_start_state("normal")
         self._refresh_estimate()
 
     def _clear_queue(self) -> None:
-        if self._busy():
+        if self._busy() or self._scanning:
             return
+        if not self.items:
+            return
+        if not messagebox.askyesno(APP_NAME, f"清空队列里的 {len(self.items)} 张图？不会动原图。"):
+            return
+        self._scan_token += 1
+        self._scanning = False
         self.items.clear()
+        self._last_result_text = ""
         self.progress.set(0)
+        self.progress_text.configure(text="0 / 0")
         self.drop_title.configure(text="把图片或文件夹拖到这里")
         self.current_label.configure(text="当前：空闲")
         self.status.configure(text="队列已清空。")
@@ -582,10 +789,19 @@ class LitangApp(ctk.CTk):
             self.eta_label.configure(text=f"成品：{pre['output_text']}")
         self.disk_label.configure(
             text=f"这盘还剩 {format_bytes(pre['free_bytes'])}。大约需要 {format_bytes(pre['need_bytes'])}。",
-            text_color=ERR if pre["blockers"] else MUTED,
+            text_color=ERR if actionable_blockers(pre["blockers"]) else MUTED,
         )
-        if pre["blockers"] and self.items:
-            self.status.configure(text=pre["blockers"][0])
+        if self._busy() or self._scanning:
+            return
+        blockers = actionable_blockers(pre.get("blockers"))
+        if blockers and self.items:
+            self.status.configure(text=blockers[0])
+        elif self._last_result_text:
+            self.status.configure(text=self._last_result_text)
+        elif self.items and not [item for item in self.items if item.status == "pending"]:
+            self.status.configure(text="队列里的图已经处理过。要再跑一遍直接点开始，已有成品会按设置跳过。")
+        elif not self.items and not self._last_result_text:
+            self.status.configure(text="空闲。先选成品位置，再拖入图片。")
 
     def _append_event(self, message: str) -> None:
         self.event_box.configure(state="normal")
@@ -596,7 +812,7 @@ class LitangApp(ctk.CTk):
     def _pick_files(self) -> None:
         paths = filedialog.askopenfilenames(
             title="选择图片",
-            filetypes=[("图片", "*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff"), ("全部", "*.*")],
+            filetypes=image_dialog_filetypes(),
         )
         if paths:
             self._add_paths(list(paths))
@@ -617,21 +833,35 @@ class LitangApp(ctk.CTk):
 
     def _open_output(self) -> None:
         cfg = self._peek_cfg()
-        if self.var_mode.get() == "beside":
-            target = self.items[0].source.parent / "理塘成品" if self.items else Path.home()
-        else:
-            target = Path(self.session_dir) if self.session_dir else resolve_output_root(cfg)
-        target.mkdir(parents=True, exist_ok=True)
-        os.startfile(target)
+        target = resolve_open_output_target(
+            self.var_mode.get(),
+            self.items,
+            self.session_dir,
+            resolve_output_root(cfg),
+        )
+        if target is None:
+            messagebox.showinfo(APP_NAME, "先加入图片，才能打开原图旁边的成品文件夹。")
+            return
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            open_in_file_manager(target)
+        except Exception as exc:
+            messagebox.showerror(APP_NAME, f"打不开这个文件夹：{exc}")
 
     def _start(self) -> None:
         if self._busy():
+            return
+        if self._scanning:
+            messagebox.showinfo(APP_NAME, "还在扫描图片，等队列数字出来再开始。")
             return
         if not self.items:
             messagebox.showinfo(APP_NAME, "先把图片或文件夹拖进来。")
             return
         if not any((self.var_upscale.get(), self.var_mosaic.get(), self.var_meta.get())):
             messagebox.showinfo(APP_NAME, "请至少勾选超分、打码、清元数据中的一项。")
+            return
+        if self.var_mosaic.get() and not self._selected_parts():
+            messagebox.showinfo(APP_NAME, "打码已开启，请至少勾选一个部位，或关掉打码。")
             return
         cfg = self._collect_cfg()
         for item in self.items:
@@ -653,10 +883,12 @@ class LitangApp(ctk.CTk):
             self.cfg = save_config({k: v for k, v in cfg.items() if k != "_session_dir"})
             cfg = {**self.cfg, "_session_dir": str(session)}
         self.control = JobControl()
-        self._set_start_state("disabled")
+        self._last_result_text = ""
+        self._set_interaction_locked(True)
         self.pause_btn.configure(state="normal", text="暂停")
         self.stop_btn.configure(state="normal")
         self.progress.set(0)
+        self.progress_text.configure(text=format_progress_text(0, len(self.items)))
         self.status.configure(text="开始处理…")
         items = self.items
 
@@ -673,6 +905,7 @@ class LitangApp(ctk.CTk):
             done = int(payload.get("done") or 0)
             if total:
                 self.progress.set(done / total)
+            self.progress_text.configure(text=format_progress_text(done, total or len(self.items)))
             self.status.configure(text=str(payload.get("message") or ""))
             if payload.get("session"):
                 self.session_dir = str(payload["session"])
@@ -691,7 +924,13 @@ class LitangApp(ctk.CTk):
         self.after(0, apply)
 
     def _on_finished(self) -> None:
-        self._set_start_state("normal")
+        counts = summarize_queue(self.items)
+        text = finish_status_text(counts, cancelled=self.control.cancel.is_set())
+        self._last_result_text = text
+        self.status.configure(text=text)
+        self.current_label.configure(text="当前：空闲")
+        self.progress_text.configure(text=format_progress_text(counts["ok"] + counts["fail"] + counts["skip"], len(self.items)))
+        self._set_interaction_locked(False)
         self.pause_btn.configure(state="disabled", text="暂停")
         self.stop_btn.configure(state="disabled")
         self.control.pause.clear()
@@ -739,6 +978,12 @@ class LitangApp(ctk.CTk):
             except Exception:
                 pass
             self._estimate_after = None
+        if getattr(self, "_resize_after", None) is not None:
+            try:
+                self.after_cancel(self._resize_after)
+            except Exception:
+                pass
+            self._resize_after = None
         super().destroy()
 
 
