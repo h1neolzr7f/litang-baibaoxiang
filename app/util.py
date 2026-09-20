@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import os
 import shutil
+import subprocess
+import sys
 from pathlib import Path
 
 
@@ -76,3 +78,23 @@ def shorten_for_windows(dest: Path) -> Path:
     digest = abs(hash(text)) % 10_000_000
     stem = dest.stem[:24] or "image"
     return dest.with_name(f"{stem}-{digest}.png")
+
+
+def image_dialog_filetypes(os_name: str | None = None) -> list[tuple[str, str]]:
+    """Tk 文件对话框的图片过滤器。Windows 用分号，其他平台用空格。"""
+    name = os_name if os_name is not None else os.name
+    if name == "nt":
+        patterns = "*.png;*.jpg;*.jpeg;*.webp;*.bmp;*.tif;*.tiff"
+    else:
+        patterns = "*.png *.jpg *.jpeg *.webp *.bmp *.tif *.tiff"
+    return [("图片", patterns), ("全部", "*.*")]
+
+
+def open_in_file_manager(path: str | Path) -> None:
+    """用系统文件管理器打开目录或文件，避免在非 Windows 上调用 startfile。"""
+    target = str(Path(path))
+    if os.name == "nt":
+        os.startfile(target)  # type: ignore[attr-defined]
+        return
+    opener = ["open", target] if sys.platform == "darwin" else ["xdg-open", target]
+    subprocess.run(opener, check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)

@@ -54,7 +54,7 @@ def test_skip_output_root_and_session(tmp_path: Path) -> None:
 
 def test_keep_original_names_and_collision() -> None:
     assigned = assign_output_names(
-        [Path(r"E:\one\cat.png"), Path(r"D:\two\cat.jpg"), Path(r"E:\one\dog.webp")]
+        [Path("one") / "cat.png", Path("two") / "cat.jpg", Path("one") / "dog.webp"]
     )
     names = [name for _, name in assigned]
     assert names == ["cat.png", "cat_2.png", "dog.png"]

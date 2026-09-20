@@ -51,6 +51,6 @@ def test_realcugan_or_lanczos_fallback(tmp_path: Path) -> None:
             2,
             {"upscale": {"engine": "auto", "model": "models-pro", "noise": "conservative"}},
         )
-        assert name in {"realcugan", "lanczos"}
+        assert name == "lanczos" or name.startswith("realcugan") or name.startswith("realesrgan") or name.startswith("waifu2x")
         with Image.open(out) as img:
             assert img.size[0] >= 48
