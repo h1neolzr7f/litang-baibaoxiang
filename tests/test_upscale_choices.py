@@ -1,6 +1,8 @@
 from pathlib import Path
+import os
 
 from PIL import Image
+import pytest
 
 from app.upscale import (
     UPSCALE_CHOICES,
@@ -107,6 +109,7 @@ def _write_fake_ncnn(path: Path) -> None:
     path.chmod(0o755)
 
 
+@pytest.mark.skipif(os.name == "nt", reason="fake shebang runtime is POSIX-only; Windows uses real .exe binaries")
 def test_realesrgan_and_waifu2x_with_fake_runtime(tmp_path: Path) -> None:
     src = tmp_path / "in.png"
     _png(src, (8, 6))

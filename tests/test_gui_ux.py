@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from tkinter import TclError
 
 import pytest
 
@@ -13,6 +14,8 @@ from app.gui import (
     finish_status_text,
     format_progress_text,
     resolve_open_output_target,
+    resolve_open_output_targets,
+    run_candidates,
     summarize_queue,
 )
 from app.util import image_dialog_filetypes, open_in_file_manager
@@ -61,6 +64,22 @@ def test_resolve_open_output_target(tmp_path: Path) -> None:
     assert resolve_open_output_target("folder", [item], "", tmp_path / "out") == tmp_path / "out"
 
 
+def test_resolve_open_output_targets_deduplicates_beside_dirs(tmp_path: Path) -> None:
+    a = QueueItem(source=tmp_path / "one" / "a.png", size=1, drop_root=tmp_path, rel_parent="")
+    b = QueueItem(source=tmp_path / "one" / "b.png", size=1, drop_root=tmp_path, rel_parent="")
+    c = QueueItem(source=tmp_path / "two" / "c.png", size=1, drop_root=tmp_path, rel_parent="")
+    targets = resolve_open_output_targets("beside", [a, b, c], "", tmp_path)
+    assert targets == [tmp_path / "one" / "理塘成品", tmp_path / "two" / "理塘成品"]
+
+
+def test_run_candidates_retry_only_keeps_success_untouched() -> None:
+    ok = SimpleNamespace(status="ok")
+    fail = SimpleNamespace(status="fail")
+    skip = SimpleNamespace(status="skip")
+    assert run_candidates([ok, fail, skip], retry_only=True) == [fail]
+    assert run_candidates([ok, fail, skip], retry_only=False) == [ok, fail, skip]
+
+
 def test_open_in_file_manager_uses_xdg_on_linux(monkeypatch, tmp_path: Path) -> None:
     called: list[list[str]] = []
     monkeypatch.setattr("app.util.os.name", "posix")
@@ -69,17 +88,29 @@ def test_open_in_file_manager_uses_xdg_on_linux(monkeypatch, tmp_path: Path) -> 
     open_in_file_manager(tmp_path)
     assert called
     assert called[0][0] == "xdg-open"
-    assert called[0][1] == str(tmp_path)
+    assert called[0][1].replace("\\", "/") == str(tmp_path).replace("\\", "/")
 
 
 pytest.importorskip("customtkinter")
+
+def _make_app_or_skip():
+    from app.gui import LitangApp
+
+    try:
+        return LitangApp()
+    except TclError as exc:
+        message = str(exc)
+        if "tk.tcl" in message or "init.tcl" in message:
+            pytest.skip(f"CI Tk runtime unavailable: {message.splitlines()[0]}")
+        raise
+
 
 
 def test_selected_parts_do_not_silently_select_all() -> None:
     from app.gui import LitangApp
     from app.mosaic import MOSAIC_PARTS
 
-    app = LitangApp()
+    app = _make_app_or_skip()
     try:
         app.update_idletasks()
         for name in MOSAIC_PARTS:
@@ -95,7 +126,7 @@ def test_selected_parts_do_not_silently_select_all() -> None:
 def test_finish_status_survives_estimate_refresh() -> None:
     from app.gui import LitangApp
 
-    app = LitangApp()
+    app = _make_app_or_skip()
     try:
         app.update_idletasks()
         item = QueueItem(source=Path("done.png"), size=12, drop_root=Path("."), rel_parent="")
@@ -113,7 +144,7 @@ def test_finish_status_survives_estimate_refresh() -> None:
 def test_clear_queue_asks_and_can_cancel(monkeypatch) -> None:
     from app.gui import LitangApp
 
-    app = LitangApp()
+    app = _make_app_or_skip()
     try:
         app.update_idletasks()
         app.items = [QueueItem(source=Path("a.png"), size=1, drop_root=Path("."), rel_parent="")]
@@ -135,7 +166,7 @@ def test_clear_queue_asks_and_can_cancel(monkeypatch) -> None:
 def test_stale_scan_does_not_repopulate_queue() -> None:
     from app.gui import LitangApp
 
-    app = LitangApp()
+    app = _make_app_or_skip()
     try:
         app.update_idletasks()
         app._scan_token = 2
@@ -151,7 +182,7 @@ def test_stale_scan_does_not_repopulate_queue() -> None:
 def test_open_output_beside_without_items(monkeypatch) -> None:
     from app.gui import LitangApp
 
-    app = LitangApp()
+    app = _make_app_or_skip()
     shown: list[str] = []
     monkeypatch.setattr("app.gui.messagebox.showinfo", lambda _t, msg: shown.append(msg))
     try:
@@ -168,7 +199,7 @@ def test_dependent_controls_follow_feature_toggles() -> None:
     from app.gui import LitangApp
     from app.upscale import UPSCALE_KEY_TO_LABEL, UPSCALE_LABELS
 
-    app = LitangApp()
+    app = _make_app_or_skip()
     try:
         app.update_idletasks()
         assert list(app.model_menu.cget("values")) == UPSCALE_LABELS
@@ -199,7 +230,7 @@ def test_dependent_controls_follow_feature_toggles() -> None:
 def test_interaction_lock_disables_queue_and_settings() -> None:
     from app.gui import LitangApp
 
-    app = LitangApp()
+    app = _make_app_or_skip()
     try:
         app.update_idletasks()
         app._set_interaction_locked(True)
@@ -210,6 +241,19 @@ def test_interaction_lock_disables_queue_and_settings() -> None:
         app._set_interaction_locked(False)
         assert str(app.pick_files_btn.cget("state")) == "normal"
         assert str(app.start_btn.cget("state")) == "normal"
+    finally:
+        app.destroy()
+
+
+def test_output_change_forgets_previous_session(monkeypatch) -> None:
+    from app.gui import LitangApp
+
+    app = _make_app_or_skip()
+    try:
+        app.update_idletasks()
+        app.session_dir = "old-session"
+        app._on_output_change()
+        assert app.session_dir == ""
     finally:
         app.destroy()
 
@@ -225,7 +269,7 @@ def test_add_images_and_start_guards(tmp_path: Path, monkeypatch) -> None:
     for name in ("one.png", "two.jpg"):
         Image.new("RGB", (16, 12), (80, 40, 20)).save(inbox / name)
 
-    app = LitangApp()
+    app = _make_app_or_skip()
     infos: list[str] = []
     monkeypatch.setattr("app.gui.messagebox.showinfo", lambda _t, msg: infos.append(msg))
     try:

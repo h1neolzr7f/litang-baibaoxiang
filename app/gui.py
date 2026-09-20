@@ -9,7 +9,7 @@ import customtkinter as ctk
 from app import APP_NAME, __version__
 from app.collect import QueueItem, scan_images
 from app.config import load_config, save_config
-from app.engine import JobControl, retry_failed, run_job
+from app.engine import JobControl, run_job
 from app.mosaic import MOSAIC_METHODS, MOSAIC_PARTS, mosaic_runtime_status
 from app.upscale import (
     UPSCALE_KEY_TO_LABEL,
@@ -90,19 +90,42 @@ def actionable_blockers(blockers: list[str] | None) -> list[str]:
     return [item for item in (blockers or []) if item != "没有待处理图片。"]
 
 
+def resolve_open_output_targets(
+    mode: str,
+    items: list,
+    session_dir: str,
+    output_root,
+) -> list[Path]:
+    if mode == "beside":
+        seen: set[str] = set()
+        targets: list[Path] = []
+        for item in items:
+            target = Path(item.source).parent / "理塘成品"
+            key = str(target.resolve()) if target.exists() else str(target.absolute())
+            if key in seen:
+                continue
+            seen.add(key)
+            targets.append(target)
+        return targets
+    if session_dir:
+        return [Path(session_dir)]
+    return [Path(output_root)]
+
+
 def resolve_open_output_target(
     mode: str,
     items: list,
     session_dir: str,
     output_root,
 ) -> Path | None:
-    if mode == "beside":
-        if not items:
-            return None
-        return Path(items[0].source).parent / "理塘成品"
-    if session_dir:
-        return Path(session_dir)
-    return Path(output_root)
+    targets = resolve_open_output_targets(mode, items, session_dir, output_root)
+    return targets[0] if targets else None
+
+
+def run_candidates(items: list, retry_only: bool = False) -> list:
+    if retry_only:
+        return [item for item in items if getattr(item, "status", "") == "fail"]
+    return list(items)
 
 
 class ConfirmDialog(ctk.CTkToplevel):
@@ -691,6 +714,9 @@ class LitangApp(ctk.CTk):
         return cfg
 
     def _on_output_change(self) -> None:
+        if not self._busy():
+            # 输出相关设置一旦改动，就不能继续沿用上一轮任务的 session 目录。
+            self.session_dir = ""
         self._sync_dependent_states()
         self._refresh_estimate()
 
@@ -862,22 +888,32 @@ class LitangApp(ctk.CTk):
 
     def _open_output(self) -> None:
         cfg = self._peek_cfg()
-        target = resolve_open_output_target(
+        targets = resolve_open_output_targets(
             self.var_mode.get(),
             self.items,
             self.session_dir,
             resolve_output_root(cfg),
         )
-        if target is None:
+        if not targets:
             messagebox.showinfo(APP_NAME, "先加入图片，才能打开原图旁边的成品文件夹。")
             return
+        if len(targets) > 1:
+            open_count = min(len(targets), 5)
+            if not messagebox.askyesno(
+                APP_NAME,
+                f"这批图片分布在 {len(targets)} 个成品文件夹。\n"
+                f"为避免一次打开太多窗口，这次最多打开前 {open_count} 个。继续吗？",
+            ):
+                return
+            targets = targets[:open_count]
         try:
-            target.mkdir(parents=True, exist_ok=True)
-            open_in_file_manager(target)
+            for target in targets:
+                target.mkdir(parents=True, exist_ok=True)
+                open_in_file_manager(target)
         except Exception as exc:
             messagebox.showerror(APP_NAME, f"打不开这个文件夹：{exc}")
 
-    def _start(self) -> None:
+    def _start(self, retry_only: bool = False) -> None:
         if self._busy():
             return
         if self._scanning:
@@ -892,21 +928,49 @@ class LitangApp(ctk.CTk):
         if self.var_mosaic.get() and not self._selected_parts():
             messagebox.showinfo(APP_NAME, "打码已开启，请至少勾选一个部位，或关掉打码。")
             return
+        candidates = run_candidates(self.items, retry_only=retry_only)
+        if retry_only and not candidates:
+            messagebox.showinfo(APP_NAME, "没有失败的图片。")
+            return
+
         cfg = self._collect_cfg()
-        for item in self.items:
-            item.status = "pending"
-            item.error = ""
-            item.steps = []
+        if retry_only and cfg.get("dated_session") and self.session_dir:
+            cfg = {**cfg, "_session_dir": self.session_dir}
+
+        # 预检只在副本上做。用户点“返回修改”时，原队列的成功/失败状态必须原样保留。
+        preview_items = [
+            QueueItem(
+                source=item.source,
+                size=item.size,
+                drop_root=item.drop_root,
+                rel_parent=item.rel_parent,
+                key=item.key,
+                dest=item.dest,
+            )
+            for item in candidates
+        ]
         session = make_session_dir(cfg)
-        assign_destinations(self.items, cfg, session)
+        if not retry_only:
+            assign_destinations(preview_items, cfg, session)
         runtime = mosaic_runtime_status(cfg)
-        pre = build_preflight(self.items, cfg, session, mosaic_available=bool(runtime.get("ok")))
+        pre = build_preflight(preview_items, cfg, session, mosaic_available=bool(runtime.get("ok")))
         dialog = ConfirmDialog(self, pre)
         self.wait_window(dialog)
         if not getattr(dialog, "result", False):
             return
         if not pre["ok"]:
             return
+
+        # 只有真正确认开始后才改变状态；重试模式也只动失败项。
+        for item in candidates:
+            item.status = "pending"
+            item.error = ""
+            item.steps = []
+        if retry_only:
+            cfg["_preserve_destinations"] = True
+        else:
+            assign_destinations(candidates, cfg, session)
+
         if session and cfg.get("dated_session"):
             cfg["_session_dir"] = str(session)
             self.cfg = save_config({k: v for k, v in cfg.items() if k != "_session_dir"})
@@ -917,9 +981,9 @@ class LitangApp(ctk.CTk):
         self.pause_btn.configure(state="normal", text="暂停")
         self.stop_btn.configure(state="normal")
         self.progress.set(0)
-        self.progress_text.configure(text=format_progress_text(0, len(self.items)))
+        self.progress_text.configure(text=format_progress_text(0, len(candidates)))
         self.status.configure(text="开始处理…")
-        items = self.items
+        items = candidates
 
         def work() -> None:
             run_job(items, cfg, progress=self._on_progress, control=self.control)
@@ -975,23 +1039,22 @@ class LitangApp(ctk.CTk):
         else:
             self.control.pause.set()
             self.pause_btn.configure(text="继续")
-            self.status.configure(text="已暂停，当前这张做完后会停住。")
+            self.status.configure(text="已暂停派发新图片；已经进入流水线的图片会继续完成。")
 
     def _stop(self) -> None:
         self.control.cancel.set()
         self.control.pause.clear()
-        self.status.configure(text="正在停止，当前这张做完就停。已完成的下次会跳过。")
+        self.status.configure(text="正在停止，不再开始新图片；已经进入流水线的图片可能会继续完成。")
 
     def _retry(self) -> None:
         if self._busy():
             return
-        failed = [item for item in self.items if item.status == "fail"]
+        failed = run_candidates(self.items, retry_only=True)
         if not failed:
             messagebox.showinfo(APP_NAME, "没有失败的图片。")
             return
-        retry_failed(self.items)
-        self._append_event(f"重新排队 {len(failed)} 张失败图片。")
-        self._start()
+        self._append_event(f"准备只重试 {len(failed)} 张失败图片。")
+        self._start(retry_only=True)
 
     def _on_close(self) -> None:
         if self._busy():
