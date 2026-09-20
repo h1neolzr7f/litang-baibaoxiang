@@ -34,14 +34,12 @@ def _safe_extract(archive: zipfile.ZipFile, dest: Path) -> None:
 def _zip_has_full_runtime(path: Path) -> bool:
     try:
         with zipfile.ZipFile(path) as zf:
-            names = [name.replace("\\", "/").lower() for name in zf.namelist()]
+            names = [name.replace("\\", "/").lower().strip("/") for name in zf.namelist()]
     except zipfile.BadZipFile:
         return False
-    markers = (
-        "/软件本体-请勿删除/runtime/anr/python/python.exe",
-        "/软件本体-安装文件勿删/runtime/anr/python/python.exe",
-    )
-    return any(any(marker in "/" + name for marker in markers) for name in names)
+    has_app = any(name.endswith("app/__main__.py") for name in names)
+    has_python = any(name.endswith("python.exe") for name in names)
+    return has_app and has_python
 
 
 def find_seed_zip(seed_dir: Path) -> Path:
@@ -60,9 +58,15 @@ def find_seed_zip(seed_dir: Path) -> Path:
 def find_body(root: Path) -> Path:
     for name in BODY_NAMES:
         for body in root.rglob(name):
-            if (body / "runtime" / "anr" / "Python" / "python.exe").is_file():
+            if (body / "app" / "__main__.py").is_file() and any(body.rglob("python.exe")):
                 return body
-    raise SystemExit("解压后没有找到完整的一键包软件本体。")
+    for main in root.rglob("__main__.py"):
+        if main.parent.name != "app":
+            continue
+        body = main.parent.parent
+        if any(body.rglob("python.exe")):
+            return body
+    raise SystemExit("解压后没有找到同时包含 app 和内置 Python 的软件本体。")
 
 
 def write_text(path: Path, text: str) -> None:
