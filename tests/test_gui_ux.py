@@ -13,6 +13,8 @@ from app.gui import (
     finish_status_text,
     format_progress_text,
     resolve_open_output_target,
+    resolve_open_output_targets,
+    run_candidates,
     summarize_queue,
 )
 from app.util import image_dialog_filetypes, open_in_file_manager
@@ -59,6 +61,22 @@ def test_resolve_open_output_target(tmp_path: Path) -> None:
     assert resolve_open_output_target("beside", [item], "", tmp_path) == src.parent / "理塘成品"
     assert resolve_open_output_target("folder", [item], str(tmp_path / "sess"), tmp_path) == tmp_path / "sess"
     assert resolve_open_output_target("folder", [item], "", tmp_path / "out") == tmp_path / "out"
+
+
+def test_resolve_open_output_targets_deduplicates_beside_dirs(tmp_path: Path) -> None:
+    a = QueueItem(source=tmp_path / "one" / "a.png", size=1, drop_root=tmp_path, rel_parent="")
+    b = QueueItem(source=tmp_path / "one" / "b.png", size=1, drop_root=tmp_path, rel_parent="")
+    c = QueueItem(source=tmp_path / "two" / "c.png", size=1, drop_root=tmp_path, rel_parent="")
+    targets = resolve_open_output_targets("beside", [a, b, c], "", tmp_path)
+    assert targets == [tmp_path / "one" / "理塘成品", tmp_path / "two" / "理塘成品"]
+
+
+def test_run_candidates_retry_only_keeps_success_untouched() -> None:
+    ok = SimpleNamespace(status="ok")
+    fail = SimpleNamespace(status="fail")
+    skip = SimpleNamespace(status="skip")
+    assert run_candidates([ok, fail, skip], retry_only=True) == [fail]
+    assert run_candidates([ok, fail, skip], retry_only=False) == [ok, fail, skip]
 
 
 def test_open_in_file_manager_uses_xdg_on_linux(monkeypatch, tmp_path: Path) -> None:
@@ -210,6 +228,19 @@ def test_interaction_lock_disables_queue_and_settings() -> None:
         app._set_interaction_locked(False)
         assert str(app.pick_files_btn.cget("state")) == "normal"
         assert str(app.start_btn.cget("state")) == "normal"
+    finally:
+        app.destroy()
+
+
+def test_output_change_forgets_previous_session(monkeypatch) -> None:
+    from app.gui import LitangApp
+
+    app = LitangApp()
+    try:
+        app.update_idletasks()
+        app.session_dir = "old-session"
+        app._on_output_change()
+        assert app.session_dir == ""
     finally:
         app.destroy()
 
