@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import pytest
+from tkinter import TclError
 
 from app.gui import fit_dialog_geometry, fit_window_geometry
 
@@ -35,10 +36,20 @@ def _visible_in_window(widget, window, slack: int = 8) -> bool:
     return bool(widget.winfo_viewable()) and top >= win_top - slack and bottom <= win_bottom + slack
 
 
-def test_start_buttons_stay_inside_window() -> None:
+def _make_app_or_skip():
     from app.gui import LitangApp
 
-    app = LitangApp()
+    try:
+        return LitangApp()
+    except TclError as exc:
+        message = str(exc)
+        if "tk.tcl" in message or "init.tcl" in message:
+            pytest.skip(f"CI Tk runtime unavailable: {message.splitlines()[0]}")
+        raise
+
+
+def test_start_buttons_stay_inside_window() -> None:
+    app = _make_app_or_skip()
     try:
         app.update_idletasks()
         app.update()
@@ -81,11 +92,12 @@ def test_fit_dialog_geometry_stays_on_screen() -> None:
 
 
 def test_confirm_start_stays_visible() -> None:
-    from app.gui import ConfirmDialog, LitangApp
+    from app.gui import ConfirmDialog
 
-    app = LitangApp()
+    app = _make_app_or_skip()
     try:
-        dialog = ConfirmDialog(
+        try:
+            dialog = ConfirmDialog(
             app,
             {
                 "summary": "88 张待处理",
@@ -93,8 +105,13 @@ def test_confirm_start_stays_visible() -> None:
                 "warnings": [f"磁盘提示 {index}" for index in range(10)],
                 "blockers": [f"拦截 {index}" for index in range(6)],
                 "ok": True,
-            },
-        )
+                },
+            )
+        except TclError as exc:
+            message = str(exc)
+            if "tk.tcl" in message or "init.tcl" in message:
+                pytest.skip(f"CI Tk runtime unavailable: {message.splitlines()[0]}")
+            raise
         app.update_idletasks()
         app.update()
         dialog.update_idletasks()
