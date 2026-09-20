@@ -11,7 +11,18 @@ from app.collect import QueueItem, scan_images
 from app.config import load_config, save_config
 from app.engine import JobControl, retry_failed, run_job
 from app.mosaic import MOSAIC_METHODS, MOSAIC_PARTS, mosaic_runtime_status
-from app.upscale import upscale_status
+from app.upscale import (
+    UPSCALE_KEY_TO_LABEL,
+    UPSCALE_LABELS,
+    UPSCALE_LABEL_TO_KEY,
+    UPSCALE_NOISE_CHOICES,
+    apply_upscale_choice,
+    choice_from_cfg,
+    choice_uses_noise,
+    label_from_noise,
+    noise_from_label,
+    upscale_status,
+)
 from app.output import assign_destinations, make_session_dir, resolve_output_root
 from app.preflight import build_preflight
 from app.util import format_bytes, format_duration, image_dialog_filetypes, open_in_file_manager
@@ -33,7 +44,7 @@ def fit_window_geometry(screen_w: int, screen_h: int, scale: float = 1.0) -> tup
     """按屏幕像素和 CTk 缩放算出 geometry 用的逻辑宽高，保证实际窗口不超出屏幕。"""
     scale = max(float(scale or 1.0), 0.5)
     width = max(400, min(1120, int((max(int(screen_w), 400) - 48) / scale)))
-    height = max(360, min(820, int((max(int(screen_h), 360) - 88) / scale)))
+    height = max(360, min(900, int((max(int(screen_h), 360) - 56) / scale)))
     return width, height
 
 
@@ -233,9 +244,9 @@ class LitangApp(ctk.CTk):
 
     def _build(self) -> None:
         header = ctk.CTkFrame(self, fg_color=CARD, corner_radius=16, border_width=1, border_color=LINE)
-        header.pack(fill="x", padx=16, pady=(10, 6))
-        ctk.CTkLabel(header, text=APP_NAME, font=ctk.CTkFont(size=26, weight="bold"), text_color=TEXT).pack(
-            anchor="w", padx=20, pady=(8, 0)
+        header.pack(fill="x", padx=16, pady=(8, 4))
+        ctk.CTkLabel(header, text=APP_NAME, font=ctk.CTkFont(size=24, weight="bold"), text_color=TEXT).pack(
+            anchor="w", padx=20, pady=(6, 0)
         )
         self.header_hint = ctk.CTkLabel(
             header,
@@ -244,12 +255,12 @@ class LitangApp(ctk.CTk):
             text_color=MUTED,
             justify="left",
         )
-        self.header_hint.pack(anchor="w", padx=20, pady=(2, 8))
+        self.header_hint.pack(anchor="w", padx=20, pady=(0, 6))
 
         place = ctk.CTkFrame(self, fg_color=CARD, corner_radius=16, border_width=1, border_color=LINE)
-        place.pack(fill="x", padx=16, pady=(0, 8))
+        place.pack(fill="x", padx=16, pady=(0, 6))
         ctk.CTkLabel(place, text="成品放哪里（点选即可改）", font=ctk.CTkFont(size=16, weight="bold"), text_color=TEXT).pack(
-            anchor="w", padx=18, pady=(8, 4)
+            anchor="w", padx=18, pady=(6, 2)
         )
         self.var_mode = ctk.StringVar(value=str(self.cfg.get("output_mode") or "folder"))
         for value, label in (
@@ -299,14 +310,14 @@ class LitangApp(ctk.CTk):
         self._setting_widgets.extend([self.keep_box, self.dated_box, self.skip_box])
 
         drop = ctk.CTkFrame(self, fg_color=DROP_BG, corner_radius=16, border_width=2, border_color=ACCENT)
-        drop.pack(fill="x", padx=16, pady=(0, 8))
-        self.drop_title = ctk.CTkLabel(drop, text="把图片或文件夹拖到这里", font=ctk.CTkFont(size=20, weight="bold"),
+        drop.pack(fill="x", padx=16, pady=(0, 6))
+        self.drop_title = ctk.CTkLabel(drop, text="把图片或文件夹拖到这里", font=ctk.CTkFont(size=18, weight="bold"),
                                       text_color=ACCENT)
-        self.drop_title.pack(pady=(12, 2))
+        self.drop_title.pack(pady=(8, 0))
         self.drop_hint = ctk.CTkLabel(drop, text="十几 GB 会在后台扫描排队，界面不会卡住。", text_color=MUTED)
         self.drop_hint.pack()
         btns = ctk.CTkFrame(drop, fg_color="transparent")
-        btns.pack(pady=(6, 10))
+        btns.pack(pady=(4, 8))
         self.pick_files_btn = ctk.CTkButton(
             btns, text="选择图片", width=110, fg_color=ACCENT, hover_color=ACCENT_HOVER, command=self._pick_files
         )
@@ -398,10 +409,10 @@ class LitangApp(ctk.CTk):
         self.event_box.configure(state="disabled")
         self.event_box.bind("<Button-1>", lambda _e: self.event_box.focus_set())
 
-        right = ctk.CTkScrollableFrame(body, fg_color=CARD, corner_radius=16, width=340)
-        right.pack(side="right", fill="y")
+        right = ctk.CTkScrollableFrame(body, fg_color=CARD, corner_radius=16, width=360)
+        right.pack(side="right", fill="both")
         ctk.CTkLabel(right, text="这一次做什么", font=ctk.CTkFont(size=16, weight="bold"), text_color=TEXT).pack(
-            anchor="w", padx=16, pady=(12, 8)
+            anchor="w", padx=14, pady=(8, 4)
         )
         up = self.cfg.get("upscale") or {}
         mo = self.cfg.get("mosaic") or {}
@@ -411,43 +422,57 @@ class LitangApp(ctk.CTk):
         self.var_meta = ctk.BooleanVar(value=bool(md.get("enabled", True)))
         self.var_scale = ctk.IntVar(value=int(up.get("scale") or 2))
         self.var_method = ctk.StringVar(value=str(mo.get("method") or "像素"))
-        saved_noise = str(up.get("noise") or "conservative")
-        self.var_noise = ctk.StringVar(value="强力降噪" if saved_noise in {"denoise3x", "strong"} else "保守细节")
+        self.var_up_choice = ctk.StringVar(
+            value=UPSCALE_KEY_TO_LABEL.get(choice_from_cfg(up), UPSCALE_LABELS[0])
+        )
+        self.var_noise = ctk.StringVar(value=label_from_noise(str(up.get("noise") or "conservative")))
         self.upscale_box = ctk.CTkCheckBox(
-            right, text="超分（Real-CUGAN 专业版优先）", variable=self.var_upscale,
+            right, text="超分（多种模型和效果）", variable=self.var_upscale,
             command=self._on_feature_toggle, text_color=TEXT,
         )
-        self.upscale_box.pack(anchor="w", padx=16, pady=4)
+        self.upscale_box.pack(anchor="w", padx=14, pady=2)
         scale_row = ctk.CTkFrame(right, fg_color="transparent")
-        scale_row.pack(fill="x", padx=16, pady=(0, 8))
-        ctk.CTkLabel(scale_row, text="放大倍数", text_color=MUTED).pack(side="left")
+        scale_row.pack(fill="x", padx=14, pady=(0, 4))
+        ctk.CTkLabel(scale_row, text="倍数", text_color=MUTED).pack(side="left")
         self.scale_btn = ctk.CTkSegmentedButton(scale_row, values=["2", "3", "4"], command=self._on_scale)
         self.scale_btn.pack(side="right")
         self.scale_btn.set(str(min(max(self.var_scale.get(), 2), 4)))
+        model_row = ctk.CTkFrame(right, fg_color="transparent")
+        model_row.pack(fill="x", padx=14, pady=(0, 4))
+        ctk.CTkLabel(model_row, text="模型", text_color=MUTED, width=40).pack(side="left")
+        self.model_menu = ctk.CTkOptionMenu(
+            model_row,
+            values=UPSCALE_LABELS,
+            variable=self.var_up_choice,
+            command=lambda _v: self._on_feature_toggle(),
+            width=250,
+        )
+        self.model_menu.pack(side="right")
         noise_row = ctk.CTkFrame(right, fg_color="transparent")
-        noise_row.pack(fill="x", padx=16, pady=(0, 8))
-        ctk.CTkLabel(noise_row, text="超分风格", text_color=MUTED).pack(side="left")
+        noise_row.pack(fill="x", padx=14, pady=(0, 4))
+        ctk.CTkLabel(noise_row, text="风格", text_color=MUTED).pack(side="left")
         self.noise_menu = ctk.CTkOptionMenu(
             noise_row,
-            values=["保守细节", "强力降噪"],
+            values=UPSCALE_NOISE_CHOICES,
             variable=self.var_noise,
+            command=lambda _v: self._refresh_anr(),
             width=130,
         )
         self.noise_menu.pack(side="right")
-        self.upscale_label = ctk.CTkLabel(right, text="", wraplength=280, justify="left", text_color=MUTED)
-        self.upscale_label.pack(anchor="w", padx=16, pady=(0, 8))
+        self.upscale_label = ctk.CTkLabel(right, text="", wraplength=300, justify="left", text_color=MUTED)
+        self.upscale_label.pack(anchor="w", padx=14, pady=(0, 6))
         self.mosaic_box = ctk.CTkCheckBox(
             right, text="打码（自动遮敏感部位）", variable=self.var_mosaic,
             command=self._on_feature_toggle, text_color=TEXT,
         )
-        self.mosaic_box.pack(anchor="w", padx=16, pady=4)
+        self.mosaic_box.pack(anchor="w", padx=14, pady=2)
         self._setting_widgets.extend([self.upscale_box, self.mosaic_box])
-        self._upscale_widgets.extend([self.scale_btn, self.noise_menu])
-        ctk.CTkLabel(right, text="打码部位（可多选，默认全开）", text_color=MUTED).pack(anchor="w", padx=16, pady=(4, 2))
+        self._upscale_widgets.extend([self.scale_btn, self.model_menu, self.noise_menu])
+        ctk.CTkLabel(right, text="打码部位（可多选，默认全开）", text_color=MUTED).pack(anchor="w", padx=14, pady=(2, 2))
         saved_parts = set(mo.get("parts") or MOSAIC_PARTS)
         self.var_parts = {name: ctk.BooleanVar(value=name in saved_parts) for name in MOSAIC_PARTS}
         parts_row = ctk.CTkFrame(right, fg_color="transparent")
-        parts_row.pack(fill="x", padx=16, pady=(0, 6))
+        parts_row.pack(fill="x", padx=14, pady=(0, 4))
         self.part_boxes = []
         for index, name in enumerate(MOSAIC_PARTS):
             box = ctk.CTkCheckBox(
@@ -457,14 +482,14 @@ class LitangApp(ctk.CTk):
             box.grid(row=index // 2, column=index % 2, sticky="w", pady=2)
             self.part_boxes.append(box)
         method_row = ctk.CTkFrame(right, fg_color="transparent")
-        method_row.pack(fill="x", padx=16, pady=(0, 8))
+        method_row.pack(fill="x", padx=14, pady=(0, 4))
         ctk.CTkLabel(method_row, text="打码方式", text_color=MUTED).pack(side="left")
         self.method_menu = ctk.CTkOptionMenu(method_row, values=MOSAIC_METHODS, variable=self.var_method, width=110)
         self.method_menu.pack(side="right")
         self.var_intensity = ctk.IntVar(value=int(mo.get("intensity") or 36))
-        ctk.CTkLabel(right, text="打码强度（越大越实）", text_color=MUTED).pack(anchor="w", padx=16)
+        ctk.CTkLabel(right, text="打码强度（越大越实）", text_color=MUTED).pack(anchor="w", padx=14)
         intensity_row = ctk.CTkFrame(right, fg_color="transparent")
-        intensity_row.pack(fill="x", padx=16, pady=(0, 8))
+        intensity_row.pack(fill="x", padx=14, pady=(0, 4))
         self.intensity_label = ctk.CTkLabel(intensity_row, text=str(self.var_intensity.get()), text_color=TEXT, width=36)
         self.intensity_label.pack(side="right")
         self.intensity_slider = ctk.CTkSlider(
@@ -472,9 +497,9 @@ class LitangApp(ctk.CTk):
         )
         self.intensity_slider.pack(side="left", fill="x", expand=True, padx=(0, 8))
         self.var_dilate = ctk.IntVar(value=int(mo.get("dilate") or 28))
-        ctk.CTkLabel(right, text="遮罩外扩（防漏边）", text_color=MUTED).pack(anchor="w", padx=16)
+        ctk.CTkLabel(right, text="遮罩外扩（防漏边）", text_color=MUTED).pack(anchor="w", padx=14)
         dilate_row = ctk.CTkFrame(right, fg_color="transparent")
-        dilate_row.pack(fill="x", padx=16, pady=(0, 8))
+        dilate_row.pack(fill="x", padx=14, pady=(0, 4))
         self.dilate_label = ctk.CTkLabel(dilate_row, text=str(self.var_dilate.get()), text_color=TEXT, width=36)
         self.dilate_label.pack(side="right")
         self.dilate_slider = ctk.CTkSlider(
@@ -482,9 +507,9 @@ class LitangApp(ctk.CTk):
         )
         self.dilate_slider.pack(side="left", fill="x", expand=True, padx=(0, 8))
         self.var_sensitivity = ctk.IntVar(value=int(mo.get("sensitivity") or 8))
-        ctk.CTkLabel(right, text="识别灵敏度（越高越能抓到小/暗部位）", text_color=MUTED).pack(anchor="w", padx=16)
+        ctk.CTkLabel(right, text="识别灵敏度（越高越能抓到小/暗部位）", text_color=MUTED).pack(anchor="w", padx=14)
         sens_row = ctk.CTkFrame(right, fg_color="transparent")
-        sens_row.pack(fill="x", padx=16, pady=(0, 8))
+        sens_row.pack(fill="x", padx=14, pady=(0, 4))
         self.sensitivity_label = ctk.CTkLabel(sens_row, text=str(self.var_sensitivity.get()), text_color=TEXT, width=36)
         self.sensitivity_label.pack(side="right")
         self.sensitivity_slider = ctk.CTkSlider(
@@ -495,7 +520,7 @@ class LitangApp(ctk.CTk):
             right, text="清元数据（去掉提示词）", variable=self.var_meta,
             command=self._on_feature_toggle, text_color=TEXT,
         )
-        self.meta_box.pack(anchor="w", padx=16, pady=4)
+        self.meta_box.pack(anchor="w", padx=14, pady=2)
         self._mosaic_widgets.extend(
             [*self.part_boxes, self.method_menu, self.intensity_slider, self.dilate_slider, self.sensitivity_slider]
         )
@@ -519,7 +544,13 @@ class LitangApp(ctk.CTk):
     def _sync_dependent_states(self) -> None:
         if self._busy() or self._scanning:
             return
-        self._set_widget_states(self._upscale_widgets, "normal" if self.var_upscale.get() else "disabled")
+        if self.var_upscale.get():
+            self._set_widget_states([self.scale_btn, self.model_menu], "normal")
+            self.noise_menu.configure(
+                state="normal" if choice_uses_noise(self._current_upscale_choice()) else "disabled"
+            )
+        else:
+            self._set_widget_states(self._upscale_widgets, "disabled")
         self._set_widget_states(self._mosaic_widgets, "normal" if self.var_mosaic.get() else "disabled")
         beside = self.var_mode.get() == "beside"
         self.out_entry.configure(state="disabled" if beside else "normal")
@@ -538,6 +569,7 @@ class LitangApp(ctk.CTk):
 
     def _on_feature_toggle(self) -> None:
         self._sync_dependent_states()
+        self._refresh_anr()
         self._refresh_estimate()
 
     def _on_resize(self, _event=None) -> None:
@@ -597,11 +629,22 @@ class LitangApp(ctk.CTk):
             text=str(status.get("message") or ""),
             text_color=OK if status.get("ok") else WARN,
         )
-        up = upscale_status(self.cfg)
+        up = upscale_status(self._peek_cfg())
         self.upscale_label.configure(
             text=str(up.get("message") or ""),
             text_color=OK if up.get("ok") else WARN,
         )
+
+    def _current_upscale_choice(self) -> str:
+        return UPSCALE_LABEL_TO_KEY.get(self.var_up_choice.get(), "auto")
+
+    def _upscale_from_ui(self, base: dict | None = None) -> dict:
+        current = dict((base or self.cfg).get("upscale") or {})
+        current.update(apply_upscale_choice(self._current_upscale_choice()))
+        current["enabled"] = self.var_upscale.get()
+        current["scale"] = int(self.var_scale.get())
+        current["noise"] = noise_from_label(self.var_noise.get())
+        return current
 
     def _on_scale(self, value: str) -> None:
         self.var_scale.set(int(value))
@@ -641,14 +684,7 @@ class LitangApp(ctk.CTk):
         cfg["keep_structure"] = self.var_keep.get()
         cfg["dated_session"] = self.var_dated.get()
         cfg["skip_existing"] = self.var_skip.get()
-        cfg["upscale"] = {
-            **cfg.get("upscale", {}),
-            "enabled": self.var_upscale.get(),
-            "scale": int(self.var_scale.get()),
-            "engine": "auto",
-            "model": "models-pro",
-            "noise": "denoise3x" if "强" in self.var_noise.get() else "conservative",
-        }
+        cfg["upscale"] = self._upscale_from_ui(cfg)
         cfg["mosaic"] = self._mosaic_cfg(cfg)
         cfg["metadata"] = {**cfg.get("metadata", {}), "enabled": self.var_meta.get()}
         self.cfg = save_config(cfg)
@@ -670,14 +706,7 @@ class LitangApp(ctk.CTk):
         cfg["keep_structure"] = self.var_keep.get()
         cfg["dated_session"] = self.var_dated.get()
         cfg["skip_existing"] = self.var_skip.get()
-        cfg["upscale"] = {
-            **cfg.get("upscale", {}),
-            "enabled": self.var_upscale.get(),
-            "scale": int(self.var_scale.get()),
-            "engine": "auto",
-            "model": "models-pro",
-            "noise": "denoise3x" if "强" in self.var_noise.get() else "conservative",
-        }
+        cfg["upscale"] = self._upscale_from_ui(cfg)
         cfg["mosaic"] = self._mosaic_cfg(cfg)
         cfg["metadata"] = {**cfg.get("metadata", {}), "enabled": self.var_meta.get()}
         return cfg
@@ -728,7 +757,7 @@ class LitangApp(ctk.CTk):
         if not self._busy():
             self._set_widget_states(self._queue_widgets, "normal")
             self._set_start_state("normal")
-        self._refresh_estimate()
+        self._refresh_estimate_now()
 
     def _clear_queue(self) -> None:
         if self._busy() or self._scanning:
@@ -746,7 +775,7 @@ class LitangApp(ctk.CTk):
         self.drop_title.configure(text="把图片或文件夹拖到这里")
         self.current_label.configure(text="当前：空闲")
         self.status.configure(text="队列已清空。")
-        self._refresh_estimate()
+        self._refresh_estimate_now()
 
     def _refresh_estimate(self) -> None:
         if self._estimate_after is not None:

@@ -166,20 +166,32 @@ def test_open_output_beside_without_items(monkeypatch) -> None:
 
 def test_dependent_controls_follow_feature_toggles() -> None:
     from app.gui import LitangApp
+    from app.upscale import UPSCALE_KEY_TO_LABEL, UPSCALE_LABELS
 
     app = LitangApp()
     try:
         app.update_idletasks()
+        assert list(app.model_menu.cget("values")) == UPSCALE_LABELS
         app.var_upscale.set(False)
         app.var_mosaic.set(False)
         app._sync_dependent_states()
         assert str(app.scale_btn.cget("state")) == "disabled"
+        assert str(app.model_menu.cget("state")) == "disabled"
         assert str(app.method_menu.cget("state")) == "disabled"
         app.var_upscale.set(True)
         app.var_mosaic.set(True)
+        app.var_up_choice.set(UPSCALE_KEY_TO_LABEL["lanczos"])
         app._sync_dependent_states()
         assert str(app.scale_btn.cget("state")) == "normal"
+        assert str(app.model_menu.cget("state")) == "normal"
+        assert str(app.noise_menu.cget("state")) == "disabled"
         assert str(app.method_menu.cget("state")) == "normal"
+        app.var_up_choice.set(UPSCALE_KEY_TO_LABEL["auto"])
+        app._sync_dependent_states()
+        assert str(app.noise_menu.cget("state")) == "normal"
+        cfg = app._upscale_from_ui()
+        assert cfg["engine"] == "auto"
+        assert cfg["model"] == "models-pro"
     finally:
         app.destroy()
 
@@ -229,6 +241,7 @@ def test_add_images_and_start_guards(tmp_path: Path, monkeypatch) -> None:
         app.update_idletasks()
         assert len(app.items) == 2
         assert "2" in app.drop_title.cget("text")
+        assert "2 张" in app.stats.cget("text")
         assert app.pick_files_btn.cget("state") == "normal"
 
         app.var_mosaic.set(True)

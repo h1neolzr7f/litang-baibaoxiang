@@ -63,7 +63,9 @@ def _using_gpu_upscale(cfg: dict[str, Any]) -> bool:
     if not up.get("enabled", True):
         return False
     engine = str(up.get("engine") or "auto")
-    if engine not in {"", "auto", "realcugan", "realcugan-pro"}:
+    if engine in {"lanczos", "bicubic", "lanczos-sharp"}:
+        return False
+    if engine not in {"", "auto", "realcugan", "realcugan-pro", "realcugan-se", "realcugan-nose"}:
         return False
     return bool(upscale_status(cfg).get("ok"))
 

@@ -23,7 +23,7 @@ def test_fit_window_geometry_stays_on_screen() -> None:
     for screen_w, screen_h, scale in cases:
         width, height = fit_window_geometry(screen_w, screen_h, scale)
         assert width * scale <= screen_w - 40
-        assert height * scale <= screen_h - 80
+        assert height * scale <= screen_h - 48
 
 
 def _visible_in_window(widget, window, slack: int = 8) -> bool:
@@ -62,6 +62,8 @@ def test_start_buttons_stay_inside_window() -> None:
         assert app.progress_text.cget("text") == "0 / 0"
         assert _visible_in_window(app.progress_text, app)
         assert _visible_in_window(app.footer_start_btn, app)
+        assert app.mosaic_box.winfo_viewable()
+        assert app.model_menu.winfo_viewable()
     finally:
         app.destroy()
 
