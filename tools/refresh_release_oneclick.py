@@ -21,6 +21,13 @@ APP_ROOT = Path(__file__).resolve().parent.parent
 BODY_NAMES = ("软件本体-请勿删除", "软件本体-安装文件勿删")
 BODY_NAME = "软件本体-请勿删除"
 
+# GitHub Windows Runner 的默认 stdout 可能是 cp1252；中文包名/日志必须强制 UTF-8。
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
+
 
 def _safe_extract(archive: zipfile.ZipFile, dest: Path) -> None:
     root = dest.resolve()
