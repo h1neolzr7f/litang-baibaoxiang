@@ -144,7 +144,8 @@ def run_job(
     session_dir = make_session_dir(cfg)
     if session_dir:
         session_dir.mkdir(parents=True, exist_ok=True)
-    assign_destinations(items, cfg, session_dir)
+    if not cfg.get("_preserve_destinations"):
+        assign_destinations(items, cfg, session_dir)
     log_dir = _record_dir(session_dir, cfg, items)
     log_dir.mkdir(parents=True, exist_ok=True)
     cfg["_record_dir"] = str(log_dir)
