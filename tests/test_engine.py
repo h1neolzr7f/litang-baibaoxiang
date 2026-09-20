@@ -103,3 +103,32 @@ def test_beside_mode(tmp_path: Path) -> None:
     with Image.open(final) as img:
         assert img.size == (12, 10)
         assert not img.info.get("Comment")
+
+
+def test_retry_preserves_duplicate_name_destination(tmp_path: Path) -> None:
+    first = tmp_path / "one" / "cat.png"
+    second = tmp_path / "two" / "cat.png"
+    _png(first, 11)
+    _png(second, 22)
+    cfg = _cfg(
+        tmp_path,
+        keep_structure=False,
+        skip_existing=False,
+        upscale={"enabled": False, "scale": 2},
+    )
+    items = scan_images([first, second])
+    session = make_session_dir(cfg)
+    assign_destinations(items, cfg, session)
+    assert items[0].dest is not None and items[0].dest.name == "cat.png"
+    assert items[1].dest is not None and items[1].dest.name == "cat_2.png"
+
+    # 模拟第一张已经成功；只重试第二张时不能重新分配成 cat.png 覆盖它。
+    items[0].dest.parent.mkdir(parents=True, exist_ok=True)
+    Image.new("RGB", (3, 3), (1, 2, 3)).save(items[0].dest)
+    retry_cfg = {**cfg, "_preserve_destinations": True}
+    result = run_job([items[1]], retry_cfg)
+    assert result["fail_count"] == 0
+    assert items[1].dest.name == "cat_2.png"
+    assert items[1].dest.exists()
+    with Image.open(items[0].dest) as img:
+        assert img.size == (3, 3)
