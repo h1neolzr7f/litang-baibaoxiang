@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from tkinter import TclError
 
 import pytest
 
@@ -92,12 +93,24 @@ def test_open_in_file_manager_uses_xdg_on_linux(monkeypatch, tmp_path: Path) -> 
 
 pytest.importorskip("customtkinter")
 
+def _make_app_or_skip():
+    from app.gui import LitangApp
+
+    try:
+        return LitangApp()
+    except TclError as exc:
+        message = str(exc)
+        if "tk.tcl" in message or "init.tcl" in message:
+            pytest.skip(f"CI Tk runtime unavailable: {message.splitlines()[0]}")
+        raise
+
+
 
 def test_selected_parts_do_not_silently_select_all() -> None:
     from app.gui import LitangApp
     from app.mosaic import MOSAIC_PARTS
 
-    app = LitangApp()
+    app = _make_app_or_skip()
     try:
         app.update_idletasks()
         for name in MOSAIC_PARTS:
@@ -113,7 +126,7 @@ def test_selected_parts_do_not_silently_select_all() -> None:
 def test_finish_status_survives_estimate_refresh() -> None:
     from app.gui import LitangApp
 
-    app = LitangApp()
+    app = _make_app_or_skip()
     try:
         app.update_idletasks()
         item = QueueItem(source=Path("done.png"), size=12, drop_root=Path("."), rel_parent="")
@@ -131,7 +144,7 @@ def test_finish_status_survives_estimate_refresh() -> None:
 def test_clear_queue_asks_and_can_cancel(monkeypatch) -> None:
     from app.gui import LitangApp
 
-    app = LitangApp()
+    app = _make_app_or_skip()
     try:
         app.update_idletasks()
         app.items = [QueueItem(source=Path("a.png"), size=1, drop_root=Path("."), rel_parent="")]
@@ -153,7 +166,7 @@ def test_clear_queue_asks_and_can_cancel(monkeypatch) -> None:
 def test_stale_scan_does_not_repopulate_queue() -> None:
     from app.gui import LitangApp
 
-    app = LitangApp()
+    app = _make_app_or_skip()
     try:
         app.update_idletasks()
         app._scan_token = 2
@@ -169,7 +182,7 @@ def test_stale_scan_does_not_repopulate_queue() -> None:
 def test_open_output_beside_without_items(monkeypatch) -> None:
     from app.gui import LitangApp
 
-    app = LitangApp()
+    app = _make_app_or_skip()
     shown: list[str] = []
     monkeypatch.setattr("app.gui.messagebox.showinfo", lambda _t, msg: shown.append(msg))
     try:
@@ -186,7 +199,7 @@ def test_dependent_controls_follow_feature_toggles() -> None:
     from app.gui import LitangApp
     from app.upscale import UPSCALE_KEY_TO_LABEL, UPSCALE_LABELS
 
-    app = LitangApp()
+    app = _make_app_or_skip()
     try:
         app.update_idletasks()
         assert list(app.model_menu.cget("values")) == UPSCALE_LABELS
@@ -217,7 +230,7 @@ def test_dependent_controls_follow_feature_toggles() -> None:
 def test_interaction_lock_disables_queue_and_settings() -> None:
     from app.gui import LitangApp
 
-    app = LitangApp()
+    app = _make_app_or_skip()
     try:
         app.update_idletasks()
         app._set_interaction_locked(True)
@@ -235,7 +248,7 @@ def test_interaction_lock_disables_queue_and_settings() -> None:
 def test_output_change_forgets_previous_session(monkeypatch) -> None:
     from app.gui import LitangApp
 
-    app = LitangApp()
+    app = _make_app_or_skip()
     try:
         app.update_idletasks()
         app.session_dir = "old-session"
@@ -256,7 +269,7 @@ def test_add_images_and_start_guards(tmp_path: Path, monkeypatch) -> None:
     for name in ("one.png", "two.jpg"):
         Image.new("RGB", (16, 12), (80, 40, 20)).save(inbox / name)
 
-    app = LitangApp()
+    app = _make_app_or_skip()
     infos: list[str] = []
     monkeypatch.setattr("app.gui.messagebox.showinfo", lambda _t, msg: infos.append(msg))
     try:
