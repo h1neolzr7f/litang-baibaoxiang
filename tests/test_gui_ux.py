@@ -87,7 +87,7 @@ def test_open_in_file_manager_uses_xdg_on_linux(monkeypatch, tmp_path: Path) -> 
     open_in_file_manager(tmp_path)
     assert called
     assert called[0][0] == "xdg-open"
-    assert called[0][1] == str(tmp_path)
+    assert called[0][1].replace("\\", "/") == str(tmp_path).replace("\\", "/")
 
 
 pytest.importorskip("customtkinter")
