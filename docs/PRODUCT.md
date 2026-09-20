@@ -12,8 +12,9 @@
 
 ## Windows 默认
 
-- 超分开，默认自动选 Real-CUGAN 专业版；也可改标准版、干净版，或本机 Lanczos / 柔和 / 清晰锐化
-- 超分风格：偏保守细节（Real-CUGAN 还可改强降噪或无降噪）
+- 超分开，默认自动选已找到的最好二次元模型（Real-CUGAN → Real-ESRGAN 动漫 → Waifu2x → Lanczos）
+- 也可手选 Real-CUGAN 专业/标准/干净、Real-ESRGAN 动漫/写实、Waifu2x，或本机 Lanczos / 柔和 / 清晰锐化 / 线条强化
+- 超分风格：偏保守细节（CUGAN / Waifu2x 还可改强降噪或无降噪）
 - 打码开，像素，强度 36，外扩 28，识别灵敏度 8
 - 四部位全开（欧西利无独立类别）
 - 清元数据开

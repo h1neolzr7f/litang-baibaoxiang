@@ -13,7 +13,7 @@ from app.config import save_config
 from app.eta import EtaEstimator
 from app.mosaic import MosaicSession, mosaic_runtime_status
 from app.quality import SignatureStore, get_store, quality_signature
-from app.upscale import upscale_status
+from app.upscale import is_gpu_upscale_engine, upscale_status
 from app.output import assign_destinations, make_session_dir, output_label, resolve_output_root
 from app.pipeline import (
     abort_process,
@@ -63,9 +63,7 @@ def _using_gpu_upscale(cfg: dict[str, Any]) -> bool:
     if not up.get("enabled", True):
         return False
     engine = str(up.get("engine") or "auto")
-    if engine in {"lanczos", "bicubic", "lanczos-sharp"}:
-        return False
-    if engine not in {"", "auto", "realcugan", "realcugan-pro", "realcugan-se", "realcugan-nose"}:
+    if not is_gpu_upscale_engine(engine):
         return False
     return bool(upscale_status(cfg).get("ok"))
 
