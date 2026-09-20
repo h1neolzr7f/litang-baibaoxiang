@@ -235,19 +235,15 @@ def refresh(seed_dir: Path, dist_dir: Path) -> Path:
 
         old_body = find_body(extracted)
         old_package = old_body.parent
+        body_rel = old_body.relative_to(old_package)
         package_root = dist_dir / f"理塘百宝箱-Windows-v{__version__}"
         if package_root.exists():
             shutil.rmtree(package_root)
         shutil.copytree(old_package, package_root)
 
-    body = None
-    for name in BODY_NAMES:
-        candidate = package_root / name
-        if candidate.is_dir():
-            body = candidate
-            break
-    if body is None:
-        raise SystemExit("复制后找不到软件本体目录。")
+    body = package_root / body_rel
+    if not body.is_dir():
+        raise SystemExit(f"复制后找不到软件本体目录：{body_rel}")
     if body.name != BODY_NAME:
         normalized = package_root / BODY_NAME
         if normalized.exists():
