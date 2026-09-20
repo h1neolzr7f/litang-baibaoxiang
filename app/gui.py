@@ -945,11 +945,13 @@ class LitangApp(ctk.CTk):
                 drop_root=item.drop_root,
                 rel_parent=item.rel_parent,
                 key=item.key,
+                dest=item.dest,
             )
             for item in candidates
         ]
         session = make_session_dir(cfg)
-        assign_destinations(preview_items, cfg, session)
+        if not retry_only:
+            assign_destinations(preview_items, cfg, session)
         runtime = mosaic_runtime_status(cfg)
         pre = build_preflight(preview_items, cfg, session, mosaic_available=bool(runtime.get("ok")))
         dialog = ConfirmDialog(self, pre)
@@ -964,7 +966,10 @@ class LitangApp(ctk.CTk):
             item.status = "pending"
             item.error = ""
             item.steps = []
-        assign_destinations(candidates, cfg, session)
+        if retry_only:
+            cfg["_preserve_destinations"] = True
+        else:
+            assign_destinations(candidates, cfg, session)
 
         if session and cfg.get("dated_session"):
             cfg["_session_dir"] = str(session)
