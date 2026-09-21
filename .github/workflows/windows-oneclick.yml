@@ -17,6 +17,7 @@ permissions:
 jobs:
   build-windows-oneclick:
     runs-on: windows-latest
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
 
@@ -65,13 +66,21 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "v${{ steps.version.outputs.version }}"
+          $version = "${{ steps.version.outputs.version }}"
+          $tag = "v$version"
           $zip = Get-ChildItem dist\*.zip | Select-Object -First 1
           if (-not $zip) { throw "没有找到 Windows 一键包 ZIP" }
 
+          # GitHub CLI / Windows 控制台对中文文件名的参数编码偶尔会丢前缀。
+          # Release 资产统一使用稳定的 ASCII 文件名，避免出现 "-Windows-vX.Y.Z.zip"。
+          $releaseName = "litang-baibaoxiang-Windows-v$version.zip"
+          $releaseZip = Join-Path $zip.DirectoryName $releaseName
+          Copy-Item $zip.FullName $releaseZip -Force
+
           gh release view $tag *> $null
           if ($LASTEXITCODE -eq 0) {
-            gh release upload $tag $zip.FullName --clobber
+            gh release delete-asset $tag "-Windows-v$version.zip" --yes 2>$null
+            gh release upload $tag $releaseZip --clobber
           } else {
-            gh release create $tag $zip.FullName --target "$env:GITHUB_SHA" --title "理塘百宝箱 $tag" --notes "Windows 10/11 64 位完整一键包。解压后双击「启动理塘百宝箱.bat」即可使用。包含完整打码运行时、检测模型和 Real-CUGAN；源码与该版本标签一致。"
+            gh release create $tag $releaseZip --target "$env:GITHUB_SHA" --title "理塘百宝箱 $tag" --notes "Windows 10/11 64 位完整一键包。解压后双击「启动理塘百宝箱.bat」即可使用。包含完整打码运行时、检测模型和 Real-CUGAN；源码与该版本标签一致。"
           }
