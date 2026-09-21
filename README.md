@@ -2,7 +2,7 @@
 
 本地图像后处理工具，提供批量超分、敏感区域打码和 PNG 元数据清理。Windows 源码与一键包面向大批量队列；Release 还提供一个历史 Android arm64 安装包。
 
-[v2.4.3 Release](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/tag/v2.4.3) · [产品说明](docs/PRODUCT.md) · [参与贡献](CONTRIBUTING.md) · [第三方组件](THIRD_PARTY.md)
+[v2.4.4 Release](https://github.com/h1neolzr7f/litang-baibaoxiang/releases/tag/v2.4.4) · [产品说明](docs/PRODUCT.md) · [参与贡献](CONTRIBUTING.md) · [第三方组件](THIRD_PARTY.md)
 
 ![Windows 主界面](docs/screenshots/toolbox-home.png)
 
@@ -19,6 +19,12 @@
 | 保留目录结构与输出预检 | 是 | 否 |
 
 程序写入新的输出文件，不应修改原图。自动检测不能保证完整覆盖，发布或上传前仍需人工复核。
+
+## Windows 一键包
+
+普通用户优先下载 Release 里的 `理塘百宝箱-Windows-v2.4.4.zip`：完整解压后双击「启动理塘百宝箱.bat」即可，不需要自行安装 Python、ANR 或 Real-CUGAN。
+
+这个 ZIP 由 GitHub Actions 自动构建：从上一版已发布的一键包复用第三方运行时和模型，只替换为当前标签对应的仓库源码，然后校验内置 Python、GUI、打码插件、检测权重和 Real-CUGAN 是否齐全。这样发布包和源码版本不会再靠人工同步。
 
 ## Windows 源码运行
 
@@ -38,11 +44,11 @@ GUI、队列、输出规划、元数据处理与几何打码逻辑可以直接�
 .venv\Scripts\python.exe -m pytest -q tests --ignore=tests/test_anr_smoke.py
 ```
 
-本次整理的结果为 **37 passed**。`test_anr_smoke.py` 需要外部 ANR 环境，未计入离线仓库验证。范围和命令见 [docs/VALIDATION.md](docs/VALIDATION.md)。
+当前 CI 结果为 **58 passed, 2 skipped**。两个 skip 都是托管 Windows 环境相关：一个是缺少完整 Tk runtime 时跳过真实窗口可见性测试，另一个是仅适用于 POSIX 的假 NCNN 可执行文件测试。`test_anr_smoke.py` 仍需要外部 ANR 环境，未计入离线仓库验证。范围和命令见 [docs/VALIDATION.md](docs/VALIDATION.md)。
 
 ## Release 与可复现性
 
-- Windows v2.4.3 一键包由维护者开发环境打包，包含仓库外运行时；使用时请从 Release 下载完整压缩包。
+- Windows v2.4.4 一键包由 GitHub Actions 基于上一版已发布完整运行时自动刷新并校验；使用时请从 Release 下载完整 ZIP。开发机仍可用 `打包一键包.bat` 从本机 ANR 环境生成完整包。
 - Android v0.29 APK 发布在同一 Release，但历史 Android Java 工程和模型权重不在本仓库。当前仓库因此**不能从源码复现该 APK**；[android/README.md](android/README.md) 仅记录安装与行为。
 - APK、模型、签名密钥和大型运行时应继续放在 Release 或各自上游，不应提交到 git。
 
