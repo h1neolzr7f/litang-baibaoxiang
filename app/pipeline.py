@@ -12,6 +12,7 @@ from app.collect import QueueItem, collect_images
 from app.mosaic import MosaicNoTarget, mosaic_runtime_status, run_anr_mosaic
 from app.pngmeta import is_png, write_clean_png
 from app.quality import get_store, quality_signature
+from app.util import ensure_dir
 from app.upscale import upscale_best
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -61,7 +62,7 @@ def _normalize(img: Image.Image) -> Image.Image:
 
 
 def _strip_to(source: Path, dest: Path, note: str = "") -> Path:
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    ensure_dir(dest.parent)
     if is_png(source):
         try:
             return write_clean_png(source, dest, note=note)
@@ -77,7 +78,7 @@ def _strip_to(source: Path, dest: Path, note: str = "") -> Path:
 
 
 def _copy_as_png(source: Path, dest: Path) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    ensure_dir(dest.parent)
     if source.suffix.lower() == ".png" and source.resolve() != dest.resolve():
         shutil.copyfile(source, dest)
         return
@@ -208,7 +209,7 @@ def finish_process(state: ProcessState) -> ProcessResult:
 
         if not state.tmp_final.exists() or state.tmp_final.stat().st_size <= 0:
             raise RuntimeError("没有写出成品文件")
-        state.final_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_dir(state.final_path.parent)
         state.tmp_final.replace(state.final_path)
         get_store(state.cfg).put(state.final_path, state.signature)
     except Exception:

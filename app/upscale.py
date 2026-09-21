@@ -12,7 +12,7 @@ from typing import Any
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 from app.config import APP_ROOT, bundled_anr_root, discover_anr_root
-from app.util import ascii_runtime_dir, child_process_kwargs, path_is_ascii, windows_short_path
+from app.util import ascii_runtime_dir, child_process_kwargs, path_is_ascii, wait_process, windows_short_path
 
 MAX_OUTPUT_PIXELS = 160_000_000
 _DISCOVER_CACHE: dict[str, Path | None] = {}
@@ -127,8 +127,11 @@ def _search_roots(anr_root: str = "") -> list[Path]:
 
 def discover_binary(folder: str, names: tuple[str, ...], anr_root: str = "") -> Path | None:
     cache_key = f"{folder}|{anr_root}"
-    if cache_key in _DISCOVER_CACHE:
-        return _DISCOVER_CACHE[cache_key]
+    cached = _DISCOVER_CACHE.get(cache_key)
+    if isinstance(cached, Path):
+        if cached.is_file():
+            return cached
+        _DISCOVER_CACHE.pop(cache_key, None)
     for root in _search_roots(anr_root):
         candidates = [root / "assets" / folder / name for name in names]
         candidates.extend(root / name for name in names)
@@ -137,7 +140,6 @@ def discover_binary(folder: str, names: tuple[str, ...], anr_root: str = "") -> 
                 found = exe.resolve()
                 _DISCOVER_CACHE[cache_key] = found
                 return found
-    _DISCOVER_CACHE[cache_key] = None
     return None
 
 
@@ -287,7 +289,7 @@ def _fit_scale(path: Path, source: Path, scale: int) -> None:
     img.save(path, format="PNG", compress_level=1)
 
 
-def _run_ncnn(exe: Path, args: list[str], source: Path, dest: Path, scale: int) -> Path:
+def _run_ncnn(exe: Path, args: list[str], source: Path, dest: Path, scale: int, cfg: dict[str, Any] | None = None) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
     launch_exe, cwd = ncnn_launch_dir(exe)
     io_dir = ascii_runtime_dir() / "ncnn-io"
@@ -295,18 +297,20 @@ def _run_ncnn(exe: Path, args: list[str], source: Path, dest: Path, scale: int) 
     out_tmp = _unique_png(io_dir, "out-")
     try:
         shutil.copyfile(source, in_path)
-        result = subprocess.run(
+        proc = subprocess.Popen(
             [str(launch_exe), "-i", str(in_path), "-o", str(out_tmp), *args],
             cwd=str(cwd),
-            capture_output=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=600,
             **child_process_kwargs(),
         )
+        cancel = (cfg or {}).get("_cancel") if isinstance(cfg, dict) else None
+        stdout, stderr, _code = wait_process(proc, 600, cancel)
         if not out_tmp.is_file() or out_tmp.stat().st_size <= 0:
-            err = (result.stderr or result.stdout or "").strip()
+            err = (stderr or stdout or "").strip()
             raise RuntimeError(err or f"{exe.name} 没有输出")
         shutil.copyfile(out_tmp, dest)
         _fit_scale(dest, source, scale)
@@ -335,6 +339,7 @@ def upscale_realcugan(source: Path, dest: Path, scale: int, cfg: dict[str, Any])
         source,
         dest,
         scale,
+        cfg,
     )
 
 
@@ -349,7 +354,7 @@ def upscale_realesrgan(source: Path, dest: Path, scale: int, cfg: dict[str, Any]
     if model not in {"realesr-animevideov3", "realesrgan-x4plus", "realesrgan-x4plus-anime", "realesrnet-x4plus"}:
         model = "realesr-animevideov3"
     run_scale = 4 if "x4plus" in model else scale
-    return _run_ncnn(exe, ["-s", str(run_scale), "-n", model], source, dest, scale)
+    return _run_ncnn(exe, ["-s", str(run_scale), "-n", model], source, dest, scale, cfg)
 
 
 def upscale_waifu2x(source: Path, dest: Path, scale: int, cfg: dict[str, Any]) -> Path:
@@ -369,13 +374,19 @@ def upscale_waifu2x(source: Path, dest: Path, scale: int, cfg: dict[str, Any]) -
         source,
         dest,
         scale,
+        cfg,
     )
 
 
 def _try_ai(fn, source: Path, dest: Path, scale: int, cfg: dict[str, Any], tag: str) -> tuple[Path, str] | None:
     try:
         return fn(source, dest, scale, cfg), tag
-    except Exception:
+    except Exception as exc:
+        # 自动模式可以换下一个模型，但不能把「停止」和「超时」吃掉再改走 Lanczos。
+        cancel = cfg.get("_cancel") if isinstance(cfg, dict) else None
+        stopped = cancel is not None and getattr(cancel, "is_set", lambda: False)()
+        if stopped or str(exc) in {"已停止", "处理超时"}:
+            raise
         return None
 
 

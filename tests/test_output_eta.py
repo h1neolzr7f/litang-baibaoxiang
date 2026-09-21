@@ -120,6 +120,34 @@ def test_preflight_does_not_block_on_two_gig_headroom(tmp_path: Path, monkeypatc
     assert any("磁盘空间不够" in item for item in blocked["blockers"])
 
 
+def test_beside_preflight_uses_the_fuller_disk(tmp_path: Path, monkeypatch) -> None:
+    one = tmp_path / "disk-a" / "a.png"
+    two = tmp_path / "disk-b" / "b.png"
+    _png(one)
+    _png(two)
+    items = scan_images([one, two])
+    assign_destinations(items, {"output_mode": "beside"}, None)
+
+    def usage(path: Path) -> tuple[int, int]:
+        if "disk-b" in str(path):
+            return (1024, 1024 * 1024)
+        return (80 * 1024 * 1024 * 1024, 100 * 1024 * 1024 * 1024)
+
+    monkeypatch.setattr("app.preflight.disk_usage", usage)
+    pre = build_preflight(
+        items,
+        {
+            "output_mode": "beside",
+            "upscale": {"enabled": False},
+            "mosaic": {"enabled": False},
+            "metadata": {"enabled": True},
+        },
+        None,
+    )
+    assert not pre["ok"]
+    assert any("磁盘空间不够" in item for item in pre["blockers"])
+
+
 def test_short_windows_name_is_stable() -> None:
     dest = Path("C:/very/long") / ("目录" * 80) / (("图片" * 80) + ".png")
     assert len(str(dest)) > 240

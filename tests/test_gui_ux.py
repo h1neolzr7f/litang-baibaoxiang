@@ -168,6 +168,32 @@ def test_clear_queue_asks_and_can_cancel(monkeypatch) -> None:
         app.destroy()
 
 
+def test_scan_error_unlocks_the_queue(monkeypatch) -> None:
+    import time
+
+    from app.gui import LitangApp
+
+    app = _make_app_or_skip()
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("读不到盘")
+
+    monkeypatch.setattr("app.gui.scan_images", boom)
+    try:
+        app.update_idletasks()
+        app._add_paths([str(Path("missing-folder"))])
+        for _ in range(40):
+            app.update()
+            if not app._scanning:
+                break
+            time.sleep(0.05)
+        assert app._scanning is False
+        assert str(app.pick_files_btn.cget("state")) == "normal"
+        assert "扫描失败" in app.event_box.get("1.0", "end")
+    finally:
+        app.destroy()
+
+
 def test_stale_scan_does_not_repopulate_queue() -> None:
     from app.gui import LitangApp
 

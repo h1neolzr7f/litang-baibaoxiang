@@ -106,6 +106,51 @@ def test_missing_explicit_model_falls_back(tmp_path: Path, monkeypatch) -> None:
     assert used == "lanczos-fallback"
 
 
+def test_auto_stop_is_not_replaced_with_lanczos(tmp_path: Path, monkeypatch) -> None:
+    src = tmp_path / "in.png"
+    _png(src, (8, 6))
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("已停止")
+
+    monkeypatch.setattr("app.upscale.upscale_realcugan", boom)
+    monkeypatch.setattr("app.upscale.upscale_realesrgan", boom)
+    monkeypatch.setattr("app.upscale.upscale_waifu2x", boom)
+    with pytest.raises(RuntimeError, match="已停止"):
+        upscale_best(src, tmp_path / "out.png", 2, {"upscale": {"engine": "auto"}})
+
+
+def test_discover_does_not_stick_on_a_miss(tmp_path: Path) -> None:
+    from app import upscale as upscale_mod
+
+    root = tmp_path / "anr"
+    assert upscale_mod.discover_realcugan(str(root)) is None
+    exe = root / "assets" / "realcugan-ncnn-vulkan" / "realcugan-ncnn-vulkan"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"MZ")
+    found = upscale_mod.discover_realcugan(str(root))
+    assert found is not None
+    assert found.is_file()
+
+
+def test_wait_process_can_be_cancelled() -> None:
+    import subprocess
+    import sys
+    import threading
+
+    from app.util import wait_process
+
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    cancel = threading.Event()
+    threading.Timer(0.15, cancel.set).start()
+    try:
+        with pytest.raises(RuntimeError, match="已停止"):
+            wait_process(proc, 20, cancel)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+
+
 def test_ncnn_unicode_install_dir_is_relocated(tmp_path: Path) -> None:
     from app.upscale import ncnn_launch_dir
     from app.util import path_is_ascii

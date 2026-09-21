@@ -5,6 +5,8 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
+import time
 from pathlib import Path
 
 
@@ -73,6 +75,69 @@ def child_process_kwargs() -> dict:
     if os.name == "nt":
         kwargs["creationflags"] = 0x08000000
     return kwargs
+
+
+def win_long(path: str | Path) -> str:
+    """超过传统 260 字符限制时加上 \\\\?\\ 前缀，避免深层目录写不出来。"""
+    text = os.path.abspath(str(path))
+    if os.name != "nt" or len(text) < 240 or text.startswith("\\\\?\\"):
+        return str(path) if os.name != "nt" or len(text) < 240 else text
+    if text.startswith("\\\\"):
+        return "\\\\?\\UNC\\" + text.lstrip("\\")
+    return "\\\\?\\" + text
+
+
+def fs_path(path: str | Path) -> str:
+    return win_long(path)
+
+
+def ensure_dir(path: str | Path) -> None:
+    target = Path(path)
+    if os.name != "nt":
+        target.mkdir(parents=True, exist_ok=True)
+        return
+    os.makedirs(win_long(target), exist_ok=True)
+
+
+def _kill_process(proc: subprocess.Popen) -> None:
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def wait_process(proc: subprocess.Popen, timeout: float, cancel=None) -> tuple[str, str, int]:
+    """等到进程结束。超时或取消时杀掉进程，避免界面一直停在「正在处理」。"""
+    box: dict[str, tuple] = {}
+    errors: list[BaseException] = []
+
+    def _drain() -> None:
+        try:
+            box["out"] = proc.communicate()
+        except Exception as exc:
+            errors.append(exc)
+
+    thread = threading.Thread(target=_drain, daemon=True)
+    thread.start()
+    deadline = time.monotonic() + max(1.0, float(timeout))
+    while thread.is_alive():
+        thread.join(0.2)
+        if cancel is not None and getattr(cancel, "is_set", lambda: False)():
+            _kill_process(proc)
+            thread.join(5)
+            raise RuntimeError("已停止")
+        if time.monotonic() >= deadline:
+            _kill_process(proc)
+            thread.join(5)
+            raise RuntimeError("处理超时")
+    if errors:
+        raise errors[0]
+    stdout, stderr = box.get("out", ("", ""))
+    if isinstance(stdout, bytes):
+        stdout = stdout.decode("utf-8", "replace")
+    if isinstance(stderr, bytes):
+        stderr = stderr.decode("utf-8", "replace")
+    return stdout or "", stderr or "", int(proc.returncode or 0)
 
 
 def format_bytes(size: int | float) -> str:

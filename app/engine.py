@@ -139,6 +139,7 @@ def run_job(
     control: JobControl | None = None,
 ) -> dict[str, Any]:
     control = control or JobControl()
+    cfg["_cancel"] = control.cancel
     _mirror_cancel = cancel_flag if cancel_flag is not None and getattr(cancel_flag, "is_set", None) else None
 
     session_dir = make_session_dir(cfg)
@@ -306,6 +307,15 @@ def run_job(
         item.status = "skip" if result.skipped else ("ok" if result.ok else "fail")
         item.error = "" if result.ok else result.message
 
+    def _stopped(item: QueueItem, exc: Exception) -> bool:
+        if not (cancelled() or str(exc) == "已停止"):
+            return False
+        with lock:
+            if item.status == "running":
+                item.status = "pending"
+                item.error = ""
+        return True
+
     def worker() -> None:
         while not cancelled():
             control.wait_if_paused()
@@ -326,6 +336,8 @@ def run_job(
                 process_item(item, work_root, cfg)
                 finish_item(item, time.monotonic() - began)
             except Exception as exc:
+                if _stopped(item, exc):
+                    continue
                 finish_item(item, time.monotonic() - began, error=str(exc))
 
     def run_staged() -> None:
@@ -351,6 +363,7 @@ def run_job(
                         )
                     )
                     began = time.monotonic()
+                    state = None
                     try:
                         if item.dest is None:
                             raise RuntimeError("还没有分配成品路径")
@@ -361,8 +374,12 @@ def run_job(
                             continue
                         advance_upscale(state)
                         mid.put((item, state, began))
+                        state = None
                     except Exception as exc:
-                        finish_item(item, time.monotonic() - began, error=str(exc))
+                        if state is not None:
+                            abort_process(state)
+                        if not _stopped(item, exc):
+                            finish_item(item, time.monotonic() - began, error=str(exc))
             finally:
                 mid.put(None)
 
@@ -378,7 +395,8 @@ def run_job(
                         fin.put((item, state, began))
                     except Exception as exc:
                         abort_process(state)
-                        finish_item(item, time.monotonic() - began, error=str(exc))
+                        if not _stopped(item, exc):
+                            finish_item(item, time.monotonic() - began, error=str(exc))
             finally:
                 fin.put(None)
 
@@ -394,7 +412,8 @@ def run_job(
                     finish_item(item, time.monotonic() - began)
                 except Exception as exc:
                     abort_process(state)
-                    finish_item(item, time.monotonic() - began, error=str(exc))
+                    if not _stopped(item, exc):
+                        finish_item(item, time.monotonic() - began, error=str(exc))
 
         threads = [
             threading.Thread(target=upscale_loop, daemon=True, name="litang-upscale"),
@@ -432,6 +451,18 @@ def run_job(
             shutil_rm = False
         allow_sleep()
         _ = shutil_rm
+
+    with lock:
+        for item in items:
+            if item.status != "running":
+                continue
+            if cancelled():
+                item.status = "pending"
+                item.error = ""
+            else:
+                item.status = "fail"
+                item.error = item.error or "处理中断"
+                fail += 1
 
     elapsed = time.monotonic() - started
     if eta.samples:

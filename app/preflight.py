@@ -23,9 +23,22 @@ def build_preflight(
     need_bytes = estimate_output_bytes(total_bytes, cfg)
     eta = estimate_seconds(total_bytes, len(ready), cfg)
     dest_probe = session_dir or resolve_output_root(cfg)
-    if str(cfg.get("output_mode") or "folder") == "beside" and ready:
-        dest_probe = ready[0].source.parent
-    free, _total = disk_usage(dest_probe)
+    mode_now = str(cfg.get("output_mode") or "folder")
+    if mode_now == "beside" and ready:
+        seen_parents: set[str] = set()
+        frees: list[int] = []
+        for item in ready:
+            parent = item.source.parent
+            key = path_key(parent)
+            if key in seen_parents:
+                continue
+            seen_parents.add(key)
+            frees.append(disk_usage(parent)[0])
+            if len(seen_parents) >= 48:
+                break
+        free = min(frees) if frees else disk_usage(ready[0].source.parent)[0]
+    else:
+        free, _total = disk_usage(dest_probe)
     headroom = 2 * 1024 * 1024 * 1024
     # 临时文件余量。以前把 2GB 算进硬门槛，盘里只剩 1GB 时连一张小图都点不了开始。
     margin = 8 * 1024 * 1024

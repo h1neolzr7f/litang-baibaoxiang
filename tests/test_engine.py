@@ -87,6 +87,8 @@ def test_engine_cancel_keeps_done(tmp_path: Path) -> None:
     run_job(items, cfg, progress=progress, control=control)
     done = list((tmp_path / "out").glob("*.png"))
     assert 2 <= len(done) < 12
+    assert not any(item.status == "running" for item in items)
+    assert any(item.status == "pending" for item in items)
 
 
 def test_beside_mode(tmp_path: Path) -> None:
