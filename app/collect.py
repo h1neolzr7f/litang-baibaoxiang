@@ -20,7 +20,14 @@ SKIP_DIR_NAMES = {
     "node_modules",
 }
 WINDOWS_BAD_CHARS = re.compile(r'[<>:"/\\|?*]+')
-SESSION_DIR = re.compile(r"^\d{8}-\d{6}$")
+_WIN_RESERVED = {
+    "CON",
+    "PRN",
+    "AUX",
+    "NUL",
+    *(f"COM{i}" for i in range(1, 10)),
+    *(f"LPT{i}" for i in range(1, 10)),
+}
 ScanCb = Callable[[int, int], None]
 
 
@@ -50,32 +57,27 @@ def is_image(path: Path) -> bool:
 
 
 def safe_stem(name: str) -> str:
-    stem = WINDOWS_BAD_CHARS.sub("-", str(name or "image")).strip(" .")
-    return stem or "image"
+    stem = WINDOWS_BAD_CHARS.sub("-", str(name or "image")).strip(" .") or "image"
+    # Windows 不允许用 CON、NUL 这类设备名当文件名，否则成品写不出来。
+    if stem.upper() in _WIN_RESERVED:
+        stem = f"{stem}_file"
+    return stem
 
 
-def _is_our_session(path: Path) -> bool:
+def _is_our_output(path: Path) -> bool:
+    """只跳过本工具自己的成品目录。用户自己的「任务说明.txt」不能把整夹图跳掉。"""
+    if (path / ".litang-job.json").is_file():
+        return True
     record = path / "_理塘百宝箱记录"
-    return (
-        (path / "任务说明.txt").is_file()
-        or (path / ".litang-job.json").is_file()
-        or (record / "任务说明.txt").is_file()
-        or (record / ".litang-job.json").is_file()
-    )
+    return (record / ".litang-job.json").is_file() or (record / "任务说明.txt").is_file()
 
 
 def _should_skip_dir(entry_path: str, name: str, skip_keys: set[str]) -> bool:
     if name in SKIP_DIR_NAMES:
         return True
-    key = path_key(entry_path)
-    if key in skip_keys:
+    if path_key(entry_path) in skip_keys:
         return True
-    folder = Path(entry_path)
-    if SESSION_DIR.match(name) and _is_our_session(folder):
-        return True
-    if _is_our_session(folder):
-        return True
-    return False
+    return _is_our_output(Path(entry_path))
 
 
 def _walk(root: Path, skip_keys: set[str], progress: ScanCb | None = None):

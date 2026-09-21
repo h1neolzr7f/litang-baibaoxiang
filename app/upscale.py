@@ -1,13 +1,18 @@
 from __future__ import annotations
 
+import hashlib
+import os
 import shutil
 import subprocess
+import tempfile
+import threading
 from pathlib import Path
 from typing import Any
 
 from PIL import Image, ImageEnhance, ImageFilter, ImageOps
 
 from app.config import APP_ROOT, bundled_anr_root, discover_anr_root
+from app.util import ascii_runtime_dir, child_process_kwargs, path_is_ascii, wait_process, windows_short_path
 
 MAX_OUTPUT_PIXELS = 160_000_000
 _DISCOVER_CACHE: dict[str, Path | None] = {}
@@ -57,12 +62,44 @@ _CHOICE_MAP = {
 }
 
 
-def _ascii_ok(path: Path) -> bool:
+_NCNN_LOCK = threading.Lock()
+
+
+def ncnn_launch_dir(exe: Path) -> tuple[Path, Path]:
+    """返回 NCNN 能打开的 (可执行文件, 工作目录)。安装在中文路径时复制到英文目录再跑。"""
+    folder = exe.parent
+    if path_is_ascii(folder):
+        return exe, folder
+    short_exe = windows_short_path(exe)
+    short_dir = windows_short_path(folder)
+    if short_exe and short_dir and path_is_ascii(short_dir):
+        return short_exe, short_dir
+    stat = exe.stat()
+    src_key = f"{folder.resolve()}|{stat.st_size}|{stat.st_mtime_ns}"
+    digest = hashlib.sha1(src_key.encode("utf-8")).hexdigest()[:12]
+    cache = ascii_runtime_dir() / "ncnn" / digest
+    marker = cache / ".litang-src"
+    with _NCNN_LOCK:
+        cached_ok = marker.is_file() and marker.read_text(encoding="utf-8", errors="replace").strip() == src_key
+        cached_exe = cache / exe.name
+        if not cached_ok or not cached_exe.is_file():
+            if cache.exists():
+                shutil.rmtree(cache, ignore_errors=True)
+            shutil.copytree(folder, cache)
+            marker.write_text(src_key, encoding="utf-8")
+    return cache / exe.name, cache
+
+
+def _unique_png(directory: Path, prefix: str) -> Path:
+    directory.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=prefix, suffix=".png", dir=directory)
+    os.close(fd)
+    path = Path(name)
     try:
-        str(path).encode("ascii")
-        return True
-    except UnicodeEncodeError:
-        return False
+        path.unlink()
+    except OSError:
+        pass
+    return path
 
 
 def _search_roots(anr_root: str = "") -> list[Path]:
@@ -90,8 +127,11 @@ def _search_roots(anr_root: str = "") -> list[Path]:
 
 def discover_binary(folder: str, names: tuple[str, ...], anr_root: str = "") -> Path | None:
     cache_key = f"{folder}|{anr_root}"
-    if cache_key in _DISCOVER_CACHE:
-        return _DISCOVER_CACHE[cache_key]
+    cached = _DISCOVER_CACHE.get(cache_key)
+    if isinstance(cached, Path):
+        if cached.is_file():
+            return cached
+        _DISCOVER_CACHE.pop(cache_key, None)
     for root in _search_roots(anr_root):
         candidates = [root / "assets" / folder / name for name in names]
         candidates.extend(root / name for name in names)
@@ -100,7 +140,6 @@ def discover_binary(folder: str, names: tuple[str, ...], anr_root: str = "") -> 
                 found = exe.resolve()
                 _DISCOVER_CACHE[cache_key] = found
                 return found
-    _DISCOVER_CACHE[cache_key] = None
     return None
 
 
@@ -250,31 +289,34 @@ def _fit_scale(path: Path, source: Path, scale: int) -> None:
     img.save(path, format="PNG", compress_level=1)
 
 
-def _run_ncnn(exe: Path, args: list[str], source: Path, dest: Path, scale: int) -> Path:
+def _run_ncnn(exe: Path, args: list[str], source: Path, dest: Path, scale: int, cfg: dict[str, Any] | None = None) -> Path:
     dest.parent.mkdir(parents=True, exist_ok=True)
-    src_tmp = dest.parent / "_ncnn_in.png"
-    out_tmp = dest.parent / "_ncnn_out.png"
-    in_path = source if _ascii_ok(source) else src_tmp
+    launch_exe, cwd = ncnn_launch_dir(exe)
+    io_dir = ascii_runtime_dir() / "ncnn-io"
+    in_path = _unique_png(io_dir, "in-")
+    out_tmp = _unique_png(io_dir, "out-")
     try:
-        if in_path == src_tmp:
-            shutil.copyfile(source, src_tmp)
-        result = subprocess.run(
-            [str(exe), "-i", str(in_path), "-o", str(out_tmp), *args],
-            cwd=str(exe.parent),
-            capture_output=True,
+        shutil.copyfile(source, in_path)
+        proc = subprocess.Popen(
+            [str(launch_exe), "-i", str(in_path), "-o", str(out_tmp), *args],
+            cwd=str(cwd),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
             text=True,
             encoding="utf-8",
             errors="replace",
-            timeout=180,
+            **child_process_kwargs(),
         )
+        cancel = (cfg or {}).get("_cancel") if isinstance(cfg, dict) else None
+        stdout, stderr, _code = wait_process(proc, 600, cancel)
         if not out_tmp.is_file() or out_tmp.stat().st_size <= 0:
-            err = (result.stderr or result.stdout or "").strip()
+            err = (stderr or stdout or "").strip()
             raise RuntimeError(err or f"{exe.name} 没有输出")
         shutil.copyfile(out_tmp, dest)
         _fit_scale(dest, source, scale)
         return dest
     finally:
-        for junk in (src_tmp, out_tmp):
+        for junk in (in_path, out_tmp):
             try:
                 junk.unlink()
             except OSError:
@@ -297,6 +339,7 @@ def upscale_realcugan(source: Path, dest: Path, scale: int, cfg: dict[str, Any])
         source,
         dest,
         scale,
+        cfg,
     )
 
 
@@ -311,7 +354,7 @@ def upscale_realesrgan(source: Path, dest: Path, scale: int, cfg: dict[str, Any]
     if model not in {"realesr-animevideov3", "realesrgan-x4plus", "realesrgan-x4plus-anime", "realesrnet-x4plus"}:
         model = "realesr-animevideov3"
     run_scale = 4 if "x4plus" in model else scale
-    return _run_ncnn(exe, ["-s", str(run_scale), "-n", model], source, dest, scale)
+    return _run_ncnn(exe, ["-s", str(run_scale), "-n", model], source, dest, scale, cfg)
 
 
 def upscale_waifu2x(source: Path, dest: Path, scale: int, cfg: dict[str, Any]) -> Path:
@@ -331,14 +374,30 @@ def upscale_waifu2x(source: Path, dest: Path, scale: int, cfg: dict[str, Any]) -
         source,
         dest,
         scale,
+        cfg,
     )
 
 
 def _try_ai(fn, source: Path, dest: Path, scale: int, cfg: dict[str, Any], tag: str) -> tuple[Path, str] | None:
     try:
         return fn(source, dest, scale, cfg), tag
-    except Exception:
+    except Exception as exc:
+        # 自动模式可以换下一个模型，但不能把「停止」和「超时」吃掉再改走 Lanczos。
+        cancel = cfg.get("_cancel") if isinstance(cfg, dict) else None
+        stopped = cancel is not None and getattr(cancel, "is_set", lambda: False)()
+        if stopped or str(exc) in {"已停止", "处理超时"}:
+            raise
         return None
+
+
+def _explicit_ai(fn, source: Path, dest: Path, scale: int, cfg: dict[str, Any], tag: str) -> tuple[Path, str]:
+    """手选的模型找不到时才回退；跑起来失败必须让这张图失败，不能悄悄换成 Lanczos。"""
+    try:
+        return fn(source, dest, scale, cfg), tag
+    except Exception as exc:
+        if "未找到" in str(exc):
+            return upscale_lanczos(source, dest, scale), "lanczos-fallback"
+        raise
 
 
 def upscale_best(source: Path, dest: Path, scale: int, cfg: dict[str, Any]) -> tuple[Path, str]:
@@ -352,11 +411,9 @@ def upscale_best(source: Path, dest: Path, scale: int, cfg: dict[str, Any]) -> t
     if engine in _LOCAL_ENGINES:
         return upscale_resample(source, dest, scale, engine), engine
     if engine == "realesrgan":
-        hit = _try_ai(upscale_realesrgan, source, dest, scale, cfg, f"realesrgan:{model}")
-        return hit if hit else (upscale_lanczos(source, dest, scale), "lanczos-fallback")
+        return _explicit_ai(upscale_realesrgan, source, dest, scale, cfg, f"realesrgan:{model}")
     if engine == "waifu2x":
-        hit = _try_ai(upscale_waifu2x, source, dest, scale, cfg, f"waifu2x:{model}")
-        return hit if hit else (upscale_lanczos(source, dest, scale), "lanczos-fallback")
+        return _explicit_ai(upscale_waifu2x, source, dest, scale, cfg, f"waifu2x:{model}")
     if engine in {"", "auto"}:
         for fn, tag in (
             (upscale_realcugan, f"realcugan:{model or 'models-pro'}"),
@@ -368,8 +425,7 @@ def upscale_best(source: Path, dest: Path, scale: int, cfg: dict[str, Any]) -> t
                 return hit
         return upscale_lanczos(source, dest, scale), "lanczos"
     if engine.startswith("realcugan"):
-        hit = _try_ai(upscale_realcugan, source, dest, scale, cfg, f"realcugan:{model}")
-        return hit if hit else (upscale_lanczos(source, dest, scale), "lanczos-fallback")
+        return _explicit_ai(upscale_realcugan, source, dest, scale, cfg, f"realcugan:{model}")
     return upscale_lanczos(source, dest, scale), "lanczos"
 
 

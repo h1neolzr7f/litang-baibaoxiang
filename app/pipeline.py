@@ -12,6 +12,7 @@ from app.collect import QueueItem, collect_images
 from app.mosaic import MosaicNoTarget, mosaic_runtime_status, run_anr_mosaic
 from app.pngmeta import is_png, write_clean_png
 from app.quality import get_store, quality_signature
+from app.util import ensure_dir
 from app.upscale import upscale_best
 
 ImageFile.LOAD_TRUNCATED_IMAGES = True
@@ -61,7 +62,7 @@ def _normalize(img: Image.Image) -> Image.Image:
 
 
 def _strip_to(source: Path, dest: Path, note: str = "") -> Path:
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    ensure_dir(dest.parent)
     if is_png(source):
         try:
             return write_clean_png(source, dest, note=note)
@@ -77,7 +78,7 @@ def _strip_to(source: Path, dest: Path, note: str = "") -> Path:
 
 
 def _copy_as_png(source: Path, dest: Path) -> None:
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    ensure_dir(dest.parent)
     if source.suffix.lower() == ".png" and source.resolve() != dest.resolve():
         shutil.copyfile(source, dest)
         return
@@ -185,9 +186,6 @@ def advance_mosaic(state: ProcessState) -> ProcessState:
     except MosaicNoTarget:
         state.steps.append("mosaic:none")
         state.missed_mosaic = True
-    except Exception as exc:
-        state.steps.append(f"mosaic:skip({exc})")
-        state.missed_mosaic = True
     return state
 
 
@@ -211,7 +209,7 @@ def finish_process(state: ProcessState) -> ProcessResult:
 
         if not state.tmp_final.exists() or state.tmp_final.stat().st_size <= 0:
             raise RuntimeError("没有写出成品文件")
-        state.final_path.parent.mkdir(parents=True, exist_ok=True)
+        ensure_dir(state.final_path.parent)
         state.tmp_final.replace(state.final_path)
         get_store(state.cfg).put(state.final_path, state.signature)
     except Exception:
@@ -251,7 +249,7 @@ def process_one(
 def process_item(item: QueueItem, work_root: Path, cfg: dict[str, Any]) -> ProcessResult:
     if item.dest is None:
         raise RuntimeError("还没有分配成品路径")
-    work_dir = work_root / (item.key.replace(":", "").replace("\\", "_").replace("/", "_")[-80:])
+    work_dir = item_work_dir(item, work_root)
     result = process_one(item.source, item.dest, work_dir, cfg)
     item.steps = result.steps
     item.status = "skip" if result.skipped else ("ok" if result.ok else "fail")
@@ -260,7 +258,11 @@ def process_item(item: QueueItem, work_root: Path, cfg: dict[str, Any]) -> Proce
 
 
 def item_work_dir(item: QueueItem, work_root: Path) -> Path:
-    return work_root / (item.key.replace(":", "").replace("\\", "_").replace("/", "_")[-80:])
+    import hashlib
+
+    digest = hashlib.sha1(item.key.encode("utf-8")).hexdigest()[:10]
+    slug = item.key.replace(":", "").replace("\\", "_").replace("/", "_")[-40:]
+    return work_root / f"{digest}-{slug}"
 
 
 def make_session_dir(output_root: str | Path) -> Path:

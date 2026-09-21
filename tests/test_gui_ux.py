@@ -11,6 +11,7 @@ import pytest
 from app.collect import QueueItem
 from app.gui import (
     actionable_blockers,
+    count_missed_mosaic,
     finish_status_text,
     format_progress_text,
     resolve_open_output_target,
@@ -29,6 +30,10 @@ def test_progress_and_finish_copy() -> None:
     assert "重试失败" in finish_status_text(counts)
     assert finish_status_text({"ok": 5, "fail": 0, "skip": 1}).startswith("全部完成")
     assert finish_status_text(counts, cancelled=True).startswith("已停止")
+    missed = finish_status_text({"ok": 2, "fail": 0, "skip": 0}, missed=2)
+    assert "2 张打码没盖住" in missed
+    item = SimpleNamespace(steps=["mosaic:none"])
+    assert count_missed_mosaic([item, SimpleNamespace(steps=["upscale:2x:lanczos"])]) == 1
 
 
 def test_actionable_blockers_ignore_empty_pending() -> None:
@@ -159,6 +164,32 @@ def test_clear_queue_asks_and_can_cancel(monkeypatch) -> None:
         assert app.items == []
         assert app.drop_title.cget("text") == "把图片或文件夹拖到这里"
         assert app.progress_text.cget("text") == "0 / 0"
+    finally:
+        app.destroy()
+
+
+def test_scan_error_unlocks_the_queue(monkeypatch) -> None:
+    import time
+
+    from app.gui import LitangApp
+
+    app = _make_app_or_skip()
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("读不到盘")
+
+    monkeypatch.setattr("app.gui.scan_images", boom)
+    try:
+        app.update_idletasks()
+        app._add_paths([str(Path("missing-folder"))])
+        for _ in range(40):
+            app.update()
+            if not app._scanning:
+                break
+            time.sleep(0.05)
+        assert app._scanning is False
+        assert str(app.pick_files_btn.cget("state")) == "normal"
+        assert "扫描失败" in app.event_box.get("1.0", "end")
     finally:
         app.destroy()
 

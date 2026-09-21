@@ -23,10 +23,25 @@ def build_preflight(
     need_bytes = estimate_output_bytes(total_bytes, cfg)
     eta = estimate_seconds(total_bytes, len(ready), cfg)
     dest_probe = session_dir or resolve_output_root(cfg)
-    if str(cfg.get("output_mode") or "folder") == "beside" and ready:
-        dest_probe = ready[0].source.parent
-    free, _total = disk_usage(dest_probe)
+    mode_now = str(cfg.get("output_mode") or "folder")
+    if mode_now == "beside" and ready:
+        seen_parents: set[str] = set()
+        frees: list[int] = []
+        for item in ready:
+            parent = item.source.parent
+            key = path_key(parent)
+            if key in seen_parents:
+                continue
+            seen_parents.add(key)
+            frees.append(disk_usage(parent)[0])
+            if len(seen_parents) >= 48:
+                break
+        free = min(frees) if frees else disk_usage(ready[0].source.parent)[0]
+    else:
+        free, _total = disk_usage(dest_probe)
     headroom = 2 * 1024 * 1024 * 1024
+    # 临时文件余量。以前把 2GB 算进硬门槛，盘里只剩 1GB 时连一张小图都点不了开始。
+    margin = 8 * 1024 * 1024
     blockers: list[str] = []
     warnings: list[str] = []
 
@@ -41,10 +56,15 @@ def build_preflight(
             source_keys = {path_key(item.source) for item in ready}
             if path_key(root) in source_keys:
                 blockers.append("成品文件夹不能是某一张原图。")
-    if free < need_bytes + headroom:
+    if free < need_bytes + margin:
         blockers.append(
-            f"磁盘空间不够。大约需要 {format_bytes(need_bytes + headroom)}，"
+            f"磁盘空间不够。大约需要 {format_bytes(need_bytes + margin)}，"
             f"这里只剩 {format_bytes(free)}。请换一个磁盘更空的文件夹。"
+        )
+    elif free < need_bytes + headroom:
+        warnings.append(
+            f"磁盘余量不大。成品大约 {format_bytes(need_bytes)}，这里还剩 {format_bytes(free)}。"
+            "这次能开始，但处理中途别再往这盘里放大文件。"
         )
     up = cfg.get("upscale") or {}
     scale = int(up.get("scale") or 2) if up.get("enabled", True) else 1

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import queue
 import threading
 from pathlib import Path
 from tkinter import filedialog, messagebox
@@ -25,7 +26,8 @@ from app.upscale import (
 )
 from app.output import assign_destinations, make_session_dir, resolve_output_root
 from app.preflight import build_preflight
-from app.util import format_bytes, format_duration, image_dialog_filetypes, open_in_file_manager
+from app.quality import SignatureStore, quality_signature
+from app.util import format_bytes, format_duration, image_dialog_filetypes, open_in_file_manager, path_key
 
 CREAM = "#F4EDE0"
 CARD = "#FFF9F0"
@@ -75,15 +77,25 @@ def summarize_queue(items: list) -> dict[str, int]:
     return counts
 
 
-def finish_status_text(counts: dict[str, int], cancelled: bool = False) -> str:
+def finish_status_text(counts: dict[str, int], cancelled: bool = False, missed: int = 0) -> str:
     ok = int(counts.get("ok") or 0)
     fail = int(counts.get("fail") or 0)
     skip = int(counts.get("skip") or 0)
+    missed_note = f" 有 {int(missed)} 张打码没盖住，发出去前请人工复查。" if int(missed or 0) else ""
     if cancelled:
-        return f"已停止：成功 {ok} · 失败 {fail} · 跳过 {skip}。已经做好的不用重做。"
+        return f"已停止：成功 {ok} · 失败 {fail} · 跳过 {skip}。已经做好的不用重做。{missed_note}"
     if fail:
-        return f"处理结束：成功 {ok} · 失败 {fail} · 跳过 {skip}。失败的可以点「重试失败」。"
-    return f"全部完成：成功 {ok} · 跳过 {skip}。"
+        return f"处理结束：成功 {ok} · 失败 {fail} · 跳过 {skip}。失败的可以点「重试失败」。{missed_note}"
+    return f"全部完成：成功 {ok} · 跳过 {skip}。{missed_note}"
+
+
+def count_missed_mosaic(items: list) -> int:
+    missed = 0
+    for item in items:
+        steps = getattr(item, "steps", None) or []
+        if any(str(step).startswith("mosaic:none") or str(step).startswith("mosaic:skip") for step in steps):
+            missed += 1
+    return missed
 
 
 def actionable_blockers(blockers: list[str] | None) -> list[str]:
@@ -229,6 +241,8 @@ class LitangApp(ctk.CTk):
         self._scanning = False
         self._scan_token = 0
         self._last_result_text = ""
+        self._ui_queue: queue.Queue = queue.Queue()
+        self._ui_pump_after: str | None = None
         self._queue_widgets: list = []
         self._setting_widgets: list = []
         self._upscale_widgets: list = []
@@ -244,6 +258,34 @@ class LitangApp(ctk.CTk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.bind("<Control-Return>", lambda _e: self._start())
         self.bind("<Configure>", self._on_resize)
+        self._schedule_ui_pump()
+
+    def _schedule_ui_pump(self) -> None:
+        if not self.winfo_exists():
+            return
+        self._ui_pump_after = self.after(40, self._pump_ui)
+
+    def _pump_ui(self) -> None:
+        """工作线程只往队列里放回调。Tk 的 after 不能从别的线程调，否则扫描失败时按钮会一直灰着。"""
+        self._ui_pump_after = None
+        if not self.winfo_exists():
+            return
+        for _ in range(64):
+            try:
+                fn = self._ui_queue.get_nowait()
+            except queue.Empty:
+                break
+            try:
+                fn()
+            except Exception as exc:
+                try:
+                    self._append_event(f"界面更新失败：{exc}")
+                except Exception:
+                    pass
+        self._schedule_ui_pump()
+
+    def _call_on_ui(self, fn) -> None:
+        self._ui_queue.put(fn)
 
     def _window_scale(self) -> float:
         try:
@@ -631,15 +673,17 @@ class LitangApp(ctk.CTk):
                 paths: list[str] = []
                 for item in files:
                     if isinstance(item, bytes):
+                        decoded = None
                         for enc in ("utf-8", "gbk", "mbcs"):
                             try:
-                                paths.append(item.decode(enc))
+                                decoded = item.decode(enc)
                                 break
                             except UnicodeDecodeError:
                                 continue
+                        paths.append(decoded if decoded is not None else item.decode("utf-8", "replace"))
                     else:
                         paths.append(str(item))
-                self.after(0, lambda: self._add_paths(paths))
+                self._call_on_ui(lambda: self._add_paths(paths))
 
             windnd.hook_dropfiles(self, func=on_drop)
             self.drop_hint.configure(text="已开启拖放。文件夹再大也会在后台排队。")
@@ -754,15 +798,33 @@ class LitangApp(ctk.CTk):
         skip_roots = self._skip_roots()
 
         def work() -> None:
-            found = scan_images(raw_paths, skip_roots=skip_roots)
-            self.after(0, lambda: self._merge_items(found, token))
+            found: list[QueueItem] = []
+            error = ""
+            hint = ""
+            try:
+                found = scan_images(raw_paths, skip_roots=skip_roots)
+                if not found:
+                    skip_keys = {path_key(item) for item in skip_roots}
+                    if any(path_key(raw) in skip_keys for raw in raw_paths):
+                        hint = "这个文件夹就是当前成品目录，里面的图不会再拿来处理。请换一个成品位置，或改选别的文件夹。"
+            except Exception as exc:
+                error = str(exc)
+            self._call_on_ui(lambda: self._merge_items(found, token, error, hint))
 
         threading.Thread(target=work, daemon=True).start()
 
-    def _merge_items(self, found: list[QueueItem], token: int | None = None) -> None:
+    def _merge_items(self, found: list[QueueItem], token: int | None = None, error: str = "", hint: str = "") -> None:
         if token is not None and token != self._scan_token:
             return
         self._scanning = False
+        if error:
+            self._append_event(f"扫描失败：{error}")
+            self.drop_title.configure(text="把图片或文件夹拖到这里" if not self.items else f"队列里有 {len(self.items)} 张图")
+            if not self._busy():
+                self._set_widget_states(self._queue_widgets, "normal")
+                self._set_start_state("normal")
+            self.status.configure(text="扫描失败，队列没有改动。")
+            return
         existed = {item.key for item in self.items}
         added = 0
         with self.scan_lock:
@@ -773,7 +835,7 @@ class LitangApp(ctk.CTk):
                 existed.add(item.key)
                 added += 1
         if added == 0:
-            self._append_event("没有新的图片。可能都已在队列里，或文件夹里没有图。")
+            self._append_event(hint or "没有新的图片。可能都已在队列里，或文件夹里没有图。")
         else:
             self._last_result_text = ""
             self._append_event(f"加入 {added} 张，当前共 {len(self.items)} 张。")
@@ -829,9 +891,28 @@ class LitangApp(ctk.CTk):
         ]
         session = make_session_dir(cfg)
         assign_destinations(clones, cfg, session)
+        busy = self._busy() or self._scanning
+        signature = quality_signature(cfg)
+        stores: dict[str, SignatureStore] = {}
+
+        def store_for(dest: Path) -> SignatureStore:
+            if str(cfg.get("output_mode") or "folder") == "beside":
+                record = dest.parent / "_理塘百宝箱记录"
+            else:
+                record = (Path(session) if session is not None else dest.parent) / "_理塘百宝箱记录"
+            key = str(record)
+            if key not in stores:
+                stores[key] = SignatureStore(record)
+            return stores[key]
+
         for src, clone in zip(self.items, clones):
-            src.dest = clone.dest
-            if cfg.get("skip_existing") and clone.dest and clone.dest.exists() and clone.dest.stat().st_size > 0:
+            if not busy:
+                src.dest = clone.dest
+            if (
+                cfg.get("skip_existing")
+                and clone.dest is not None
+                and store_for(clone.dest).matches(clone.dest, signature)
+            ):
                 clone.status = "skip"
         pre = build_preflight(clones, cfg, session, mosaic_available=bool(runtime.get("ok")))
         if not self.items:
@@ -986,8 +1067,13 @@ class LitangApp(ctk.CTk):
         items = candidates
 
         def work() -> None:
-            run_job(items, cfg, progress=self._on_progress, control=self.control)
-            self.after(0, self._on_finished)
+            try:
+                run_job(items, cfg, progress=self._on_progress, control=self.control)
+            except Exception as exc:
+                message = str(exc)
+                self._call_on_ui(lambda: self._append_event(f"处理中断：{message}"))
+            finally:
+                self._call_on_ui(self._on_finished)
 
         self.worker = threading.Thread(target=work, daemon=True)
         self.worker.start()
@@ -1014,11 +1100,15 @@ class LitangApp(ctk.CTk):
             if payload.get("log"):
                 self._append_event(str(payload["log"]))
 
-        self.after(0, apply)
+        self._call_on_ui(apply)
 
     def _on_finished(self) -> None:
         counts = summarize_queue(self.items)
-        text = finish_status_text(counts, cancelled=self.control.cancel.is_set())
+        text = finish_status_text(
+            counts,
+            cancelled=self.control.cancel.is_set(),
+            missed=count_missed_mosaic(self.items),
+        )
         self._last_result_text = text
         self.status.configure(text=text)
         self.current_label.configure(text="当前：空闲")
@@ -1044,7 +1134,7 @@ class LitangApp(ctk.CTk):
     def _stop(self) -> None:
         self.control.cancel.set()
         self.control.pause.clear()
-        self.status.configure(text="正在停止，不再开始新图片；已经进入流水线的图片可能会继续完成。")
+        self.status.configure(text="正在停止。还没做完的会退回队列，已经做好的不用重做。")
 
     def _retry(self) -> None:
         if self._busy():
@@ -1064,6 +1154,12 @@ class LitangApp(ctk.CTk):
         self.destroy()
 
     def destroy(self) -> None:
+        if getattr(self, "_ui_pump_after", None) is not None:
+            try:
+                self.after_cancel(self._ui_pump_after)
+            except Exception:
+                pass
+            self._ui_pump_after = None
         if getattr(self, "_estimate_after", None) is not None:
             try:
                 self.after_cancel(self._estimate_after)

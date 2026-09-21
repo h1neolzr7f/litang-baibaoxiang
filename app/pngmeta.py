@@ -3,8 +3,11 @@
 from __future__ import annotations
 
 import binascii
+import os
 import shutil
 from pathlib import Path
+
+from app.util import ensure_dir, fs_path
 
 PNG_MAGIC = b"\x89PNG\r\n\x1a\n"
 _DROP = {b"tEXt", b"zTXt", b"iTXt", b"eXIf", b"tIME"}
@@ -27,10 +30,32 @@ def _itxt_chunk(key: str, value: str) -> bytes:
     return len(data).to_bytes(4, "big") + body + crc.to_bytes(4, "big")
 
 
+_MAX_CHUNK = 256 * 1024 * 1024
+
+
+def _remove_file(path: Path) -> None:
+    try:
+        os.remove(fs_path(path))
+    except OSError:
+        pass
+
+
+def _read_exact(src, length: int) -> bytes:
+    if length > _MAX_CHUNK:
+        raise ValueError("png chunk too large")
+    buf = bytearray()
+    while len(buf) < length:
+        blob = src.read(min(1024 * 1024, length - len(buf)))
+        if not blob:
+            break
+        buf.extend(blob)
+    return bytes(buf)
+
+
 def write_clean_png(source: Path, dest: Path, note: str = "") -> Path:
     source = Path(source)
     dest = Path(dest)
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    ensure_dir(dest.parent)
     tmp = dest.with_name(dest.name + ".strip-tmp")
     if source.resolve() == dest.resolve():
         copied = dest.with_name(dest.name + ".src-tmp")
@@ -39,7 +64,7 @@ def write_clean_png(source: Path, dest: Path, note: str = "") -> Path:
     else:
         copied = None
     try:
-        with source.open("rb") as src, tmp.open("wb") as out:
+        with open(fs_path(source), "rb") as src, open(fs_path(tmp), "wb") as out:
             magic = src.read(8)
             if magic != PNG_MAGIC:
                 raise ValueError("not a png")
@@ -50,7 +75,7 @@ def write_clean_png(source: Path, dest: Path, note: str = "") -> Path:
                     break
                 length = int.from_bytes(header[:4], "big")
                 ctype = header[4:8]
-                data = src.read(length)
+                data = _read_exact(src, length)
                 crc = src.read(4)
                 if len(data) < length or len(crc) < 4:
                     raise ValueError("truncated png")
@@ -66,16 +91,9 @@ def write_clean_png(source: Path, dest: Path, note: str = "") -> Path:
                 out.write(header)
                 out.write(data)
                 out.write(crc)
-        tmp.replace(dest)
+        os.replace(fs_path(tmp), fs_path(dest))
         return dest
     finally:
-        if tmp.exists():
-            try:
-                tmp.unlink()
-            except OSError:
-                pass
-        if copied is not None and copied.exists():
-            try:
-                copied.unlink()
-            except OSError:
-                pass
+        _remove_file(tmp)
+        if copied is not None:
+            _remove_file(copied)

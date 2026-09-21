@@ -25,7 +25,7 @@ from app.pipeline import (
     start_process,
 )
 from app.preflight import build_preflight
-from app.util import allow_sleep, format_bytes, format_duration, prevent_sleep
+from app.util import allow_sleep, ascii_runtime_dir, format_bytes, format_duration, prevent_sleep
 
 ProgressCb = Callable[[dict[str, Any]], None]
 
@@ -125,7 +125,7 @@ def _write_job_readme(record_dir: Path, cfg: dict[str, Any], preflight: dict[str
 
 
 def _work_root() -> Path:
-    root = Path(tempfile.gettempdir()) / "litang-baibaoxiang" / "work"
+    root = ascii_runtime_dir() / "work"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -139,6 +139,7 @@ def run_job(
     control: JobControl | None = None,
 ) -> dict[str, Any]:
     control = control or JobControl()
+    cfg["_cancel"] = control.cancel
     _mirror_cancel = cancel_flag if cancel_flag is not None and getattr(cancel_flag, "is_set", None) else None
 
     session_dir = make_session_dir(cfg)
@@ -277,11 +278,17 @@ def run_job(
                     done_path,
                     json.dumps({"src": str(item.source), "dest": dest, "steps": item.steps}, ensure_ascii=False),
                 )
+                detail = " / ".join(item.steps)
+                log = f"完成 {item.source.name}"
+                if "lanczos-fallback" in detail:
+                    log += "（所选 AI 超分没跑成，已改用普通放大）"
+                elif any(step.startswith("mosaic:none") for step in item.steps):
+                    log += "（这张没检测到要打的位置）"
                 extra = {
                     "item_status": "skip" if item.status == "skip" else "ok",
                     "current": str(item.source),
                     "steps": item.steps,
-                    "log": f"完成 {item.source.name}",
+                    "log": log,
                 }
             leftover = len([row for row in pending if row.status == "pending"])
             remain = eta.remaining(
@@ -299,6 +306,15 @@ def run_job(
         item.steps = result.steps
         item.status = "skip" if result.skipped else ("ok" if result.ok else "fail")
         item.error = "" if result.ok else result.message
+
+    def _stopped(item: QueueItem, exc: Exception) -> bool:
+        if not (cancelled() or str(exc) == "已停止"):
+            return False
+        with lock:
+            if item.status == "running":
+                item.status = "pending"
+                item.error = ""
+        return True
 
     def worker() -> None:
         while not cancelled():
@@ -320,6 +336,8 @@ def run_job(
                 process_item(item, work_root, cfg)
                 finish_item(item, time.monotonic() - began)
             except Exception as exc:
+                if _stopped(item, exc):
+                    continue
                 finish_item(item, time.monotonic() - began, error=str(exc))
 
     def run_staged() -> None:
@@ -345,6 +363,7 @@ def run_job(
                         )
                     )
                     began = time.monotonic()
+                    state = None
                     try:
                         if item.dest is None:
                             raise RuntimeError("还没有分配成品路径")
@@ -355,8 +374,12 @@ def run_job(
                             continue
                         advance_upscale(state)
                         mid.put((item, state, began))
+                        state = None
                     except Exception as exc:
-                        finish_item(item, time.monotonic() - began, error=str(exc))
+                        if state is not None:
+                            abort_process(state)
+                        if not _stopped(item, exc):
+                            finish_item(item, time.monotonic() - began, error=str(exc))
             finally:
                 mid.put(None)
 
@@ -372,7 +395,8 @@ def run_job(
                         fin.put((item, state, began))
                     except Exception as exc:
                         abort_process(state)
-                        finish_item(item, time.monotonic() - began, error=str(exc))
+                        if not _stopped(item, exc):
+                            finish_item(item, time.monotonic() - began, error=str(exc))
             finally:
                 fin.put(None)
 
@@ -388,7 +412,8 @@ def run_job(
                     finish_item(item, time.monotonic() - began)
                 except Exception as exc:
                     abort_process(state)
-                    finish_item(item, time.monotonic() - began, error=str(exc))
+                    if not _stopped(item, exc):
+                        finish_item(item, time.monotonic() - began, error=str(exc))
 
         threads = [
             threading.Thread(target=upscale_loop, daemon=True, name="litang-upscale"),
@@ -426,6 +451,18 @@ def run_job(
             shutil_rm = False
         allow_sleep()
         _ = shutil_rm
+
+    with lock:
+        for item in items:
+            if item.status != "running":
+                continue
+            if cancelled():
+                item.status = "pending"
+                item.error = ""
+            else:
+                item.status = "fail"
+                item.error = item.error or "处理中断"
+                fail += 1
 
     elapsed = time.monotonic() - started
     if eta.samples:

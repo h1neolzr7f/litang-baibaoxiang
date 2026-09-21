@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import threading
 from pathlib import Path
 from typing import Any
 
@@ -61,21 +62,37 @@ class SignatureStore:
         self.record_dir = Path(record_dir) if record_dir else None
         self._data = load_signatures(self.record_dir)
         self._dirty = False
+        self._lock = threading.Lock()
+
+    def _key(self, dest: Path) -> str:
+        from app.util import path_key
+
+        return path_key(dest)
 
     def matches(self, dest: Path, signature: str) -> bool:
         if not dest.exists() or dest.stat().st_size <= 0:
             return False
-        return self._data.get(str(dest)) == signature
+        key = self._key(dest)
+        with self._lock:
+            if self._data.get(key) == signature:
+                return True
+            # 旧版本按原始路径字符串存签名，换盘符大小写时仍应认得出。
+            return self._data.get(str(dest)) == signature
 
     def put(self, dest: Path, signature: str, flush: bool = True) -> None:
         if not self.record_dir:
             return
-        self._data[str(dest)] = signature
-        self._dirty = True
-        if flush:
-            self.flush()
+        with self._lock:
+            self._data[self._key(dest)] = signature
+            self._dirty = True
+            if flush:
+                self._flush_locked()
 
     def flush(self) -> None:
+        with self._lock:
+            self._flush_locked()
+
+    def _flush_locked(self) -> None:
         if not self.record_dir or not self._dirty:
             return
         self.record_dir.mkdir(parents=True, exist_ok=True)

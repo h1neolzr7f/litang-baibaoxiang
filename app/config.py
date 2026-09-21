@@ -110,6 +110,14 @@ def discover_anr_python(anr_root: str = "") -> str:
     return ""
 
 
+def _clamp_int(value: Any, default: int, low: int, high: int) -> int:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        number = default
+    return max(low, min(high, number))
+
+
 def _usable_output_root(raw: str) -> str:
     text = str(raw or "").strip().strip('"')
     if not text:
@@ -146,6 +154,15 @@ def load_config() -> dict[str, Any]:
         if not str(cfg.get("anr_python") or "").strip():
             cfg["anr_python"] = discover_anr_python(str(cfg.get("anr_root") or ""))
     cfg["output_root"] = _usable_output_root(str(cfg.get("output_root") or ""))
+    up = cfg["upscale"]
+    up["scale"] = _clamp_int(up.get("scale"), 2, 1, 4)
+    mo = cfg["mosaic"]
+    mo["intensity"] = _clamp_int(mo.get("intensity"), 36, 8, 80)
+    mo["dilate"] = _clamp_int(mo.get("dilate"), 28, 0, 64)
+    mo["sensitivity"] = _clamp_int(mo.get("sensitivity"), 8, 1, 10)
+    if not isinstance(mo.get("parts"), list):
+        mo["parts"] = list(DEFAULTS["mosaic"]["parts"])
+    cfg["workers"] = _clamp_int(cfg.get("workers"), 2, 1, 3)
     return cfg
 
 

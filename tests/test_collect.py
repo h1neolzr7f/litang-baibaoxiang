@@ -2,7 +2,7 @@ from pathlib import Path
 
 from PIL import Image
 
-from app.collect import assign_output_names, collect_images, scan_images
+from app.collect import assign_output_names, collect_images, safe_stem, scan_images
 from app.output import assign_destinations
 
 
@@ -50,6 +50,27 @@ def test_skip_output_root_and_session(tmp_path: Path) -> None:
     items = scan_images([tmp_path], skip_roots=[out])
     assert [item.source.name for item in items] == ["keep.png"]
     assert items[0].rel_parent == "inbox"
+
+
+def test_user_notes_are_not_treated_as_output(tmp_path: Path) -> None:
+    notes = tmp_path / "notes"
+    notes.mkdir()
+    (notes / "任务说明.txt").write_text("这是用户自己的说明", encoding="utf-8")
+    _png(notes / "keep.png")
+    session = tmp_path / "20260101-000000"
+    record = session / "_理塘百宝箱记录"
+    record.mkdir(parents=True)
+    (record / "任务说明.txt").write_text("job", encoding="utf-8")
+    _png(session / "done.png")
+    names = sorted(item.source.name for item in scan_images([tmp_path]))
+    assert names == ["keep.png"]
+
+
+def test_reserved_windows_name_is_rewritten() -> None:
+    assert safe_stem("CON") == "CON_file"
+    assert safe_stem("nul") == "nul_file"
+    assigned = assign_output_names([Path("CON.png")])
+    assert assigned[0][1] == "CON_file.png"
 
 
 def test_keep_original_names_and_collision() -> None:

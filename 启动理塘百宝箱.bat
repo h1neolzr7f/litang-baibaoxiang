@@ -9,6 +9,8 @@ if not defined PY if exist "软件本体-请勿删除\runtime\anr\Python\python.
   set "PY=runtime\anr\Python\python.exe"
 )
 if not defined PY if exist ".venv\Scripts\python.exe" set "PY=.venv\Scripts\python.exe"
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
 if not defined PY (
   echo [理塘百宝箱] 第一次打开，正在准备运行环境，请稍等…
   py -3 -m venv .venv 2>nul
@@ -27,6 +29,7 @@ if not defined PY (
   )
   set "PY=.venv\Scripts\python.exe"
 )
+set "PYTHONPATH=%CD%"
 "%PY%" -m app
 if errorlevel 1 (
   echo.

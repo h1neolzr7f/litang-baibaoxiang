@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 import tempfile
 from pathlib import Path
@@ -20,6 +21,7 @@ from detect_geom import (  # noqa: E402
     sensitivity_to_conf,
     tile_windows,
 )
+from util import ascii_runtime_dir, path_is_ascii  # noqa: E402
 
 
 def _parse_color(raw: str) -> tuple[int, int, int]:
@@ -46,9 +48,29 @@ def _work_dir(session_dir: str) -> Path:
         dest = raw / "_detect_tmp"
         dest.mkdir(parents=True, exist_ok=True)
         return dest
-    dest = Path(tempfile.gettempdir()) / "litang-detect"
+    dest = ascii_runtime_dir() / "detect"
     dest.mkdir(parents=True, exist_ok=True)
     return dest
+
+
+def _materialize_ascii(source_path: str) -> str:
+    src = Path(source_path)
+    if path_is_ascii(src):
+        return str(src)
+    folder = ascii_runtime_dir() / "detect-in"
+    folder.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix="src-", suffix=src.suffix or ".png", dir=folder)
+    os.close(fd)
+    shutil.copyfile(src, name)
+    return name
+
+
+def _ascii_session(session_dir: str) -> str:
+    if session_dir and path_is_ascii(session_dir):
+        return session_dir
+    dest = ascii_runtime_dir() / "mosaic-out"
+    dest.mkdir(parents=True, exist_ok=True)
+    return str(dest)
 
 
 def dilate_mask(mask_path: str, pixels: int) -> str:
@@ -264,10 +286,12 @@ def _anr_detector_mask(detector, source_path: str, attempts: list) -> str:
 
 
 def detect_and_mosaic(runtime: dict, req: dict, anr_cwd: Path) -> str:
-    source_path = req["source"]
+    source_path = _materialize_ascii(str(req["source"]))
+    session_dir = _ascii_session(str(req.get("session_dir") or ""))
+    req = {**req, "source": source_path, "session_dir": session_dir}
     attempts = req.get("attempts") or []
     extra = dict(req.get("extra") or {})
-    extra["session_dir"] = str(req.get("session_dir") or extra.get("session_dir") or "")
+    extra["session_dir"] = session_dir
     model = runtime.get("model")
     detector = runtime.get("detector")
     mask_path = ""
