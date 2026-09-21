@@ -76,6 +76,52 @@ def test_local_upscale_effects_differ(tmp_path: Path) -> None:
     assert len(set(pixels.values())) >= 2
 
 
+def test_explicit_model_failure_is_not_silent(tmp_path: Path, monkeypatch) -> None:
+    src = tmp_path / "in.png"
+    _png(src, (8, 6))
+
+    def boom(*_args, **_kwargs):
+        raise RuntimeError("vulkan device lost")
+
+    monkeypatch.setattr("app.upscale.upscale_realesrgan", boom)
+    with pytest.raises(RuntimeError, match="vulkan"):
+        upscale_best(
+            src,
+            tmp_path / "out.png",
+            2,
+            {"upscale": {"engine": "realesrgan", "model": "realesr-animevideov3"}},
+        )
+
+
+def test_missing_explicit_model_falls_back(tmp_path: Path, monkeypatch) -> None:
+    src = tmp_path / "in.png"
+    _png(src, (8, 6))
+    monkeypatch.setattr("app.upscale.discover_realesrgan", lambda *_args, **_kwargs: None)
+    _path, used = upscale_best(
+        src,
+        tmp_path / "out.png",
+        2,
+        {"upscale": {"engine": "realesrgan", "model": "realesr-animevideov3"}},
+    )
+    assert used == "lanczos-fallback"
+
+
+def test_ncnn_unicode_install_dir_is_relocated(tmp_path: Path) -> None:
+    from app.upscale import ncnn_launch_dir
+    from app.util import path_is_ascii
+
+    folder = tmp_path / "中文目录"
+    folder.mkdir()
+    exe = folder / "realcugan-ncnn-vulkan"
+    exe.write_bytes(b"MZ")
+    (folder / "models-pro").mkdir()
+    launch, cwd = ncnn_launch_dir(exe)
+    assert path_is_ascii(launch)
+    assert path_is_ascii(cwd)
+    assert launch.is_file()
+    assert (cwd / "models-pro").is_dir()
+
+
 def test_status_for_local_and_missing_cugan() -> None:
     local = upscale_status({"upscale": {"engine": "bicubic"}, "anr_root": ""})
     assert local["ok"]

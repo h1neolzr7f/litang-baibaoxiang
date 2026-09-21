@@ -75,15 +75,25 @@ def summarize_queue(items: list) -> dict[str, int]:
     return counts
 
 
-def finish_status_text(counts: dict[str, int], cancelled: bool = False) -> str:
+def finish_status_text(counts: dict[str, int], cancelled: bool = False, missed: int = 0) -> str:
     ok = int(counts.get("ok") or 0)
     fail = int(counts.get("fail") or 0)
     skip = int(counts.get("skip") or 0)
+    missed_note = f" 有 {int(missed)} 张打码没盖住，发出去前请人工复查。" if int(missed or 0) else ""
     if cancelled:
-        return f"已停止：成功 {ok} · 失败 {fail} · 跳过 {skip}。已经做好的不用重做。"
+        return f"已停止：成功 {ok} · 失败 {fail} · 跳过 {skip}。已经做好的不用重做。{missed_note}"
     if fail:
-        return f"处理结束：成功 {ok} · 失败 {fail} · 跳过 {skip}。失败的可以点「重试失败」。"
-    return f"全部完成：成功 {ok} · 跳过 {skip}。"
+        return f"处理结束：成功 {ok} · 失败 {fail} · 跳过 {skip}。失败的可以点「重试失败」。{missed_note}"
+    return f"全部完成：成功 {ok} · 跳过 {skip}。{missed_note}"
+
+
+def count_missed_mosaic(items: list) -> int:
+    missed = 0
+    for item in items:
+        steps = getattr(item, "steps", None) or []
+        if any(str(step).startswith("mosaic:none") or str(step).startswith("mosaic:skip") for step in steps):
+            missed += 1
+    return missed
 
 
 def actionable_blockers(blockers: list[str] | None) -> list[str]:
@@ -1018,7 +1028,11 @@ class LitangApp(ctk.CTk):
 
     def _on_finished(self) -> None:
         counts = summarize_queue(self.items)
-        text = finish_status_text(counts, cancelled=self.control.cancel.is_set())
+        text = finish_status_text(
+            counts,
+            cancelled=self.control.cancel.is_set(),
+            missed=count_missed_mosaic(self.items),
+        )
         self._last_result_text = text
         self.status.configure(text=text)
         self.current_label.configure(text="当前：空闲")

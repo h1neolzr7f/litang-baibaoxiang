@@ -4,11 +4,75 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 
 def path_key(path: str | Path) -> str:
     return os.path.normcase(os.path.abspath(str(path)))
+
+
+def path_is_ascii(path: str | Path) -> bool:
+    try:
+        str(path).encode("ascii")
+        return True
+    except UnicodeEncodeError:
+        return False
+
+
+def ascii_runtime_dir() -> Path:
+    """给 NCNN / OpenCV 用的纯英文工作目录。中文用户名下的 Temp 会让超分和打码直接失败。"""
+    candidates: list[Path] = [Path(tempfile.gettempdir()) / "litang-baibaoxiang"]
+    if os.name == "nt":
+        public = os.environ.get("PUBLIC")
+        if public:
+            candidates.append(Path(public) / "litang-baibaoxiang")
+        windir = os.environ.get("SYSTEMROOT") or os.environ.get("WINDIR")
+        if windir:
+            candidates.append(Path(windir) / "Temp" / "litang-baibaoxiang")
+    for cand in candidates:
+        if not path_is_ascii(cand):
+            continue
+        try:
+            cand.mkdir(parents=True, exist_ok=True)
+            probe = cand / ".write-test"
+            probe.write_text("ok", encoding="ascii")
+            probe.unlink()
+            return cand
+        except OSError:
+            continue
+    fallback = Path(tempfile.gettempdir()) / "litang-baibaoxiang"
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback
+
+
+def windows_short_path(path: Path) -> Path | None:
+    if os.name != "nt":
+        return None
+    try:
+        import ctypes
+
+        buf = ctypes.create_unicode_buffer(32768)
+        count = ctypes.windll.kernel32.GetShortPathNameW(str(path), buf, len(buf))
+        if not count:
+            return None
+        short = buf.value
+        if short and path_is_ascii(short):
+            return Path(short)
+    except Exception:
+        return None
+    return None
+
+
+def child_process_kwargs() -> dict:
+    """子进程强制 UTF-8，并在 Windows 上不弹出黑色控制台。"""
+    env = os.environ.copy()
+    env["PYTHONUTF8"] = "1"
+    env["PYTHONIOENCODING"] = "utf-8"
+    kwargs: dict = {"env": env}
+    if os.name == "nt":
+        kwargs["creationflags"] = 0x08000000
+    return kwargs
 
 
 def format_bytes(size: int | float) -> str:
@@ -75,7 +139,9 @@ def shorten_for_windows(dest: Path) -> Path:
     text = str(dest)
     if len(text) <= 240:
         return dest
-    digest = abs(hash(text)) % 10_000_000
+    import hashlib
+
+    digest = hashlib.sha1(text.encode("utf-8")).hexdigest()[:8]
     stem = dest.stem[:24] or "image"
     return dest.with_name(f"{stem}-{digest}.png")
 

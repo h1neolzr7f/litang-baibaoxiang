@@ -114,28 +114,56 @@ def replace_app(body: Path) -> None:
             pass
 
 
-def write_launcher(package_root: Path) -> None:
-    write_text(
-        package_root / "启动理塘百宝箱.bat",
-        """@echo off
+LAUNCHER_BAT = """@echo off
 chcp 65001 >nul
 title 理塘百宝箱
 cd /d "%~dp0"
 set "ROOT=%~dp0软件本体-请勿删除"
+if not exist "%ROOT%\\app\\__main__.py" set "ROOT=%~dp0"
+cd /d "%ROOT%"
 set "PY=%ROOT%\\runtime\\anr\\Python\\python.exe"
+if not exist "%PY%" set "PY=%ROOT%\\Python\\python.exe"
 if not exist "%PY%" (
   echo 软件不完整。请重新下载并完整解压整个一键包，不要只复制启动文件。
   pause
   exit /b 1
 )
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
+set "PYTHONPATH=%ROOT%"
+echo 正在打开理塘百宝箱…
 "%PY%" -m app
 if errorlevel 1 (
   echo.
-  echo 启动失败。请把 软件本体-请勿删除\\data\\last_error.txt 发给作者。
+  echo 启动失败。请把「软件本体-请勿删除\\data\\last_error.txt」发给作者。
+  echo 如果这个文件不存在，多半是没有完整解压，或没有从软件本体目录启动。
   pause
 )
-""",
-    )
+"""
+
+
+SHORTCUT_BAT = """@echo off
+chcp 65001 >nul
+cd /d "%~dp0"
+set "TARGET=%~dp0启动理塘百宝箱.bat"
+set "WORKDIR=%~dp0"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$s=(New-Object -ComObject WScript.Shell).CreateShortcut((Join-Path $env:USERPROFILE 'Desktop\\理塘百宝箱.lnk')); $s.TargetPath=$env:TARGET; $s.WorkingDirectory=$env:WORKDIR; $s.Description='理塘百宝箱'; $s.Save()"
+if errorlevel 1 (
+  echo 创建快捷方式失败。你也可以把「启动理塘百宝箱.bat」发送到桌面。
+  pause
+  exit /b 1
+)
+echo 桌面已经有「理塘百宝箱」快捷方式了。
+pause
+"""
+
+
+def write_launcher(package_root: Path) -> None:
+    # 上一版压缩包里可能残留文件名乱码的旧 bat。留下它们会让人点到过期启动脚本。
+    for old in package_root.glob("*.bat"):
+        old.unlink()
+    write_text(package_root / "启动理塘百宝箱.bat", LAUNCHER_BAT)
+    write_text(package_root / "创建桌面快捷方式.bat", SHORTCUT_BAT)
 
 
 def write_readme(package_root: Path, version: str) -> None:

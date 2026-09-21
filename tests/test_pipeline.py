@@ -41,6 +41,34 @@ def test_upscale_and_strip_keep_original_name(tmp_path: Path) -> None:
     assert "metadata:clean" in result.steps
 
 
+def test_mosaic_crash_fails_the_image(tmp_path: Path) -> None:
+    source = tmp_path / "plain.png"
+    _nai_like_png(source)
+
+    class Boom:
+        def run(self, _source, _output):
+            raise RuntimeError("检测进程崩了")
+
+    final = tmp_path / "done" / "plain.png"
+    try:
+        process_one(
+            source,
+            final,
+            tmp_path / "work",
+            _cfg(
+                upscale={"enabled": False, "scale": 2, "engine": "lanczos"},
+                mosaic={"enabled": True, "parts": ["欧派派"]},
+                _mosaic_runtime={"ok": True},
+                _mosaic_session=Boom(),
+            ),
+        )
+    except RuntimeError as exc:
+        assert "检测进程崩了" in str(exc)
+    else:
+        raise AssertionError("打码崩溃不该被当成成功")
+    assert not final.exists()
+
+
 def test_missing_anr_does_not_block(tmp_path: Path) -> None:
     source = tmp_path / "plain.png"
     _nai_like_png(source)

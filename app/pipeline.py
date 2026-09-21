@@ -185,9 +185,6 @@ def advance_mosaic(state: ProcessState) -> ProcessState:
     except MosaicNoTarget:
         state.steps.append("mosaic:none")
         state.missed_mosaic = True
-    except Exception as exc:
-        state.steps.append(f"mosaic:skip({exc})")
-        state.missed_mosaic = True
     return state
 
 
@@ -251,7 +248,7 @@ def process_one(
 def process_item(item: QueueItem, work_root: Path, cfg: dict[str, Any]) -> ProcessResult:
     if item.dest is None:
         raise RuntimeError("还没有分配成品路径")
-    work_dir = work_root / (item.key.replace(":", "").replace("\\", "_").replace("/", "_")[-80:])
+    work_dir = item_work_dir(item, work_root)
     result = process_one(item.source, item.dest, work_dir, cfg)
     item.steps = result.steps
     item.status = "skip" if result.skipped else ("ok" if result.ok else "fail")
@@ -260,7 +257,11 @@ def process_item(item: QueueItem, work_root: Path, cfg: dict[str, Any]) -> Proce
 
 
 def item_work_dir(item: QueueItem, work_root: Path) -> Path:
-    return work_root / (item.key.replace(":", "").replace("\\", "_").replace("/", "_")[-80:])
+    import hashlib
+
+    digest = hashlib.sha1(item.key.encode("utf-8")).hexdigest()[:10]
+    slug = item.key.replace(":", "").replace("\\", "_").replace("/", "_")[-40:]
+    return work_root / f"{digest}-{slug}"
 
 
 def make_session_dir(output_root: str | Path) -> Path:

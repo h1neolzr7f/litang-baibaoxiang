@@ -25,7 +25,7 @@ from app.pipeline import (
     start_process,
 )
 from app.preflight import build_preflight
-from app.util import allow_sleep, format_bytes, format_duration, prevent_sleep
+from app.util import allow_sleep, ascii_runtime_dir, format_bytes, format_duration, prevent_sleep
 
 ProgressCb = Callable[[dict[str, Any]], None]
 
@@ -125,7 +125,7 @@ def _write_job_readme(record_dir: Path, cfg: dict[str, Any], preflight: dict[str
 
 
 def _work_root() -> Path:
-    root = Path(tempfile.gettempdir()) / "litang-baibaoxiang" / "work"
+    root = ascii_runtime_dir() / "work"
     root.mkdir(parents=True, exist_ok=True)
     return root
 
@@ -277,11 +277,17 @@ def run_job(
                     done_path,
                     json.dumps({"src": str(item.source), "dest": dest, "steps": item.steps}, ensure_ascii=False),
                 )
+                detail = " / ".join(item.steps)
+                log = f"完成 {item.source.name}"
+                if "lanczos-fallback" in detail:
+                    log += "（所选 AI 超分没跑成，已改用普通放大）"
+                elif any(step.startswith("mosaic:none") for step in item.steps):
+                    log += "（这张没检测到要打的位置）"
                 extra = {
                     "item_status": "skip" if item.status == "skip" else "ok",
                     "current": str(item.source),
                     "steps": item.steps,
-                    "log": f"完成 {item.source.name}",
+                    "log": log,
                 }
             leftover = len([row for row in pending if row.status == "pending"])
             remain = eta.remaining(

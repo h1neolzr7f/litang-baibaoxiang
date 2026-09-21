@@ -142,6 +142,9 @@ if not exist "%PY%" (
   pause
   exit /b 1
 )
+set "PYTHONUTF8=1"
+set "PYTHONIOENCODING=utf-8"
+set "PYTHONPATH=%ROOT%"
 echo 正在打开理塘百宝箱…
 "%PY%" -m app
 if errorlevel 1 (

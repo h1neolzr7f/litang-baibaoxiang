@@ -8,6 +8,7 @@ from typing import Any
 
 from app.config import discover_anr_python, is_bundled_runtime, load_config
 from app.detect_geom import box_expand_for_sensitivity, sensitivity_to_conf
+from app.util import child_process_kwargs
 
 MOSAIC_PARTS = ["欧金金", "欧芒果", "欧派派", "欧西利"]
 MOSAIC_METHODS = ["像素", "模糊", "线条", "纯色", "表情"]
@@ -18,6 +19,10 @@ class MosaicNoTarget(RuntimeError):
 
 
 _RUNTIME_CACHE: tuple[str, dict[str, Any]] | None = None
+
+
+def _allowed_python_name(path: str) -> bool:
+    return Path(path).name.lower() in {"python.exe", "python", "pythonw.exe", "pythonw"}
 
 
 def mosaic_runtime_status(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -38,7 +43,7 @@ def mosaic_runtime_status(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
             "anr_python": python_path,
             "message": "未找到 ANR 打码插件，超分和清元数据仍可用",
         }
-    elif not python_path or not Path(python_path).is_file():
+    elif not python_path or not Path(python_path).is_file() or not _allowed_python_name(python_path):
         result = {
             "ok": False,
             "anr_root": str(anr_root),
@@ -107,6 +112,7 @@ class MosaicSession:
             encoding="utf-8",
             errors="replace",
             cwd=str(self.runtime["anr_root"]),
+            **child_process_kwargs(),
         )
         threading.Thread(target=self._drain_stderr, daemon=True).start()
         ready = self._read_message()
@@ -180,7 +186,8 @@ class MosaicSession:
 
 def run_anr_mosaic(source: Path, output_dir: Path, cfg: dict[str, Any]) -> Path:
     session = cfg.get("_mosaic_session")
-    if isinstance(session, MosaicSession):
+    run = getattr(session, "run", None)
+    if callable(run):
         return session.run(source, output_dir)
     runtime = mosaic_runtime_status(cfg)
     if not runtime.get("ok"):
@@ -206,6 +213,7 @@ def run_anr_mosaic(source: Path, output_dir: Path, cfg: dict[str, Any]) -> Path:
         text=True,
         encoding="utf-8",
         errors="replace",
+        **child_process_kwargs(),
     )
     if result.returncode == 10:
         err = (result.stderr or "").strip()
